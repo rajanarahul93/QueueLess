@@ -3,3 +3,7 @@ node_modules/
 __pycache__/
 .venv/
 .next/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.tsbuildinfo
