@@ -59,7 +59,10 @@ def test_known_timezone_is_accepted() -> None:
     assert BusinessCreate.model_validate(business()).timezone == "Asia/Kolkata"
 
 
-@pytest.mark.parametrize("timezone", ["Mars/Base", "localtime", "../etc/passwd", ""])
+@pytest.mark.parametrize(
+    "timezone",
+    ["Mars/Base", "localtime", "posixrules", "posix/UTC", "right/UTC", "../etc/passwd", ""],
+)
 def test_unknown_timezone_is_rejected(timezone: str) -> None:
     with pytest.raises(ValidationError):
         BusinessCreate.model_validate(business(timezone=timezone))

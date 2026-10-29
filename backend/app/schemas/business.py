@@ -24,9 +24,18 @@ HHMM = Annotated[str, StringConstraints(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
 MAX_MINUTES = 1440
 
 
+# Some Linux tz directories ship these as files, so available_timezones() lists them even
+# though they are not real places ("localtime" would mean whatever zone the server is in).
+NOT_A_PLACE = {"localtime", "posixrules", "Factory"}
+
+
 def _known_timezone(value: str) -> str:
-    # Membership in the IANA list, not ZoneInfo(value): that also accepts "localtime" etc.
-    if value not in zoneinfo.available_timezones():
+    # Membership in the IANA list, not ZoneInfo(value): that also accepts paths and "localtime".
+    if (
+        value not in zoneinfo.available_timezones()
+        or value in NOT_A_PLACE
+        or value.startswith(("posix/", "right/"))
+    ):
         raise ValueError("unknown IANA timezone")
     return value
 
