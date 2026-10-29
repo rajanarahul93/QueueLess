@@ -14,6 +14,8 @@ docker compose up api worker web
 # API: http://localhost:8000 (OpenAPI at /docs)   Web: http://localhost:3000
 ```
 
+Compose binds to localhost only because the placeholder secrets are public; never expose these ports on a shared network.
+
 ## Checks
 
 ```text

@@ -1,8 +1,7 @@
+import os
 from typing import Any
 
 from arq.connections import RedisSettings
-
-from app.core.config import Settings
 
 
 async def noop(ctx: dict[str, Any]) -> None:
@@ -11,7 +10,8 @@ async def noop(ctx: dict[str, Any]) -> None:
     return None
 
 
+# Reads only REDIS_URL: the worker does not need the API's secrets.
 class WorkerSettings:
     functions = [noop]
-    redis_settings = RedisSettings.from_dsn(Settings().redis_url)
+    redis_settings = RedisSettings.from_dsn(os.environ["REDIS_URL"])
     health_check_interval = 30

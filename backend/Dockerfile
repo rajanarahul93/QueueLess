@@ -5,5 +5,8 @@ ENV PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PAT
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY . .
+# Fixed uid: nothing at runtime writes inside the image, so the app user needs read access only.
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+USER 10001
 # One image, two processes: the default runs the API; the worker service overrides the command.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

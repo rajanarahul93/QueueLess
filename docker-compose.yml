@@ -26,7 +26,13 @@ services:
     environment: &backend_env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
-    ports: ["8000:8000"]
+      APP_ENV: local
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      OTP_PROVIDER: mock
+      # Local-only placeholders so a fresh clone starts; Settings rejects them unless APP_ENV=local.
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-jwt-secret-not-for-production-use}
+      STREAM_TOKEN_SECRET: ${STREAM_TOKEN_SECRET:-local-dev-only-stream-secret-not-for-production-use}
+    ports: ["127.0.0.1:8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -57,7 +63,7 @@ services:
       context: ./web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]
     depends_on:
       api: {condition: service_healthy}
     healthcheck:

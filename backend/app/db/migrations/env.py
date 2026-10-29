@@ -1,20 +1,26 @@
 import asyncio
+import os
 
 from alembic import context
 from sqlalchemy import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.config import Settings
+from app.models import Base
 
 config = context.config
-# Tests inject a container URL on the config; otherwise use the environment.
-url = config.get_main_option("sqlalchemy.url") or Settings().database_url
-# No models yet; Phase 1 sets target_metadata for autogenerate.
-target_metadata = None
+# Tests inject a container URL on the config; otherwise read only DATABASE_URL, so migrations
+# do not need the app's other required settings.
+url = config.get_main_option("sqlalchemy.url") or os.environ["DATABASE_URL"]
+target_metadata = Base.metadata
 
 
 def run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

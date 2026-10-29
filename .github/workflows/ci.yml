@@ -1,7 +1,9 @@
 name: CI
 
+# Feature branches get CI only through a pull request, so a PR push does not run it twice.
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
