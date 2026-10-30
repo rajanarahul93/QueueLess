@@ -24,6 +24,7 @@ from app.core.timezones import get_zone
 from app.models import Appointment, Business, Resource, Service, User
 from app.models.appointment import ACTIVE_STATUSES
 from app.schemas.appointment import AppointmentOut, AvailabilityOut, SlotOut
+from app.services.queue import default_resource
 
 GRID_STEP = timedelta(minutes=15)
 MAX_DAYS_AHEAD = 60
@@ -163,14 +164,7 @@ async def get_availability(
     now = datetime.fromtimestamp(clock(), UTC)
     zone = get_zone(business.timezone)
     day = parse_day(raw_day, zone, now)
-    resource = await session.scalar(
-        select(Resource)
-        .where(Resource.business_id == business.id, Resource.is_active)
-        .order_by(Resource.name, Resource.id)
-        .limit(1)
-    )
-    if resource is None:
-        raise NotFound("No active resource")
+    resource = await default_resource(session, business.id)
     slots = await day_slots(session, business, service, resource.id, day, now)
     return AvailabilityOut(
         timezone=business.timezone, slots=[slot_out(s, zone, resource.id) for s in slots]
