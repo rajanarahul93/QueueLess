@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     otp_max_attempts: int = Field(default=5, gt=0)
     otp_resend_cooldown_sec: int = Field(default=30, gt=0)
     idempotency_ttl_sec: int = Field(default=86400, gt=0)
+    db_pool_size: int = Field(default=10, gt=0)
+    booking_rate_limit_per_hour: int = Field(default=20, gt=0)
 
     @field_validator("cors_origins", mode="before")
     @classmethod

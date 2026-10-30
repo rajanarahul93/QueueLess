@@ -59,13 +59,17 @@ CurrentUser = Annotated[AccessClaims, Depends(get_current_user)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
+async def account_role(session: AsyncSession, user_id: uuid.UUID) -> str:
+    """The role comes from the database, so a demoted or deleted user loses access at once."""
+    role = await session.scalar(select(User.role).where(User.id == user_id))
+    if role is None:
+        raise Unauthenticated("Invalid or expired token")
+    return role
+
+
 def _require_account_role(*roles: str) -> Callable[..., Awaitable[AccessClaims]]:
     async def dependency(user: CurrentUser, session: SessionDep) -> AccessClaims:
-        """The role comes from the database, so a demoted or deleted user loses access at once."""
-        role = await session.scalar(select(User.role).where(User.id == user.user_id))
-        if role is None:
-            raise Unauthenticated("Invalid or expired token")
-        if role not in roles:
+        if await account_role(session, user.user_id) not in roles:
             raise Forbidden("Not allowed for this account")
         return user
 
@@ -74,6 +78,27 @@ def _require_account_role(*roles: str) -> Callable[..., Awaitable[AccessClaims]]
 
 require_owner_account = _require_account_role("owner")
 require_staff_or_owner_account = _require_account_role("owner", "staff")
+require_customer_account = _require_account_role("customer")
+require_appointment_account = _require_account_role("customer", "owner", "staff")
+
+
+async def assert_member(
+    session: AsyncSession, business_id: uuid.UUID, user_id: uuid.UUID, *roles: str
+) -> None:
+    """404 unknown business, 403 when the user has no membership with one of `roles`."""
+    membership = and_(BusinessMember.business_id == Business.id, BusinessMember.user_id == user_id)
+    row = (
+        await session.execute(
+            select(BusinessMember.role)
+            .select_from(Business)
+            .outerjoin(BusinessMember, membership)
+            .where(Business.id == business_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise NotFound("Business not found")
+    if row.role not in roles:
+        raise Forbidden("Not allowed for this business")
 
 
 def require_business_member(*roles: str) -> Callable[..., Awaitable[AccessClaims]]:
@@ -85,21 +110,7 @@ def require_business_member(*roles: str) -> Callable[..., Awaitable[AccessClaims
     async def dependency(
         business_id: uuid.UUID, user: CurrentUser, session: SessionDep
     ) -> AccessClaims:
-        membership = and_(
-            BusinessMember.business_id == Business.id, BusinessMember.user_id == user.user_id
-        )
-        row = (
-            await session.execute(
-                select(BusinessMember.role)
-                .select_from(Business)
-                .outerjoin(BusinessMember, membership)
-                .where(Business.id == business_id)
-            )
-        ).one_or_none()
-        if row is None:
-            raise NotFound("Business not found")
-        if row.role not in roles:
-            raise Forbidden("Not allowed for this business")
+        await assert_member(session, business_id, user.user_id, *roles)
         return user
 
     return dependency

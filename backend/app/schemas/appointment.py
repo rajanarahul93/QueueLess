@@ -1,6 +1,6 @@
 import uuid
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 
 class SlotOut(BaseModel):
@@ -14,3 +14,44 @@ class SlotOut(BaseModel):
 class AvailabilityOut(BaseModel):
     timezone: str
     slots: list[SlotOut]
+
+
+class AppointmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service_id: uuid.UUID
+    resource_id: uuid.UUID
+    start: AwareDatetime  # a naive timestamp is a 422
+
+
+class CustomerOut(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class AppointmentOut(BaseModel):
+    """Times are ISO 8601 in the business-local offset."""
+
+    id: uuid.UUID
+    business_id: uuid.UUID
+    service_id: uuid.UUID
+    service_name: str
+    resource_id: uuid.UUID
+    start: str
+    end: str  # start + the service's current duration_min; the stored buffer is not shown
+    status: str
+    created_at: str
+
+
+class StaffAppointmentOut(AppointmentOut):
+    customer: CustomerOut
+
+
+class AppointmentPage(BaseModel):
+    items: list[AppointmentOut]
+    next_cursor: str | None
+
+
+class StaffAppointmentPage(BaseModel):
+    items: list[StaffAppointmentOut]
+    next_cursor: str | None

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
-from app.api.v1 import auth, businesses
+from app.api.v1 import appointments, auth, businesses
 from app.core.config import Settings
 from app.core.errors import register_error_handlers
 from app.core.idempotency import Replay, handle_replay
@@ -25,7 +25,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        engine = create_engine(resolved.database_url)
+        engine = create_engine(resolved.database_url, resolved.db_pool_size)
         redis = Redis.from_url(resolved.redis_url)
         app.state.settings = resolved
         app.state.clock = clock
@@ -52,6 +52,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     app.add_exception_handler(Replay, handle_replay)  # type: ignore[arg-type]
     app.include_router(auth.router, prefix="/v1")
     app.include_router(businesses.router, prefix="/v1")
+    app.include_router(appointments.router, prefix="/v1")
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

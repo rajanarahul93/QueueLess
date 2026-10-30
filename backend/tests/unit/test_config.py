@@ -123,3 +123,12 @@ def test_cors_origins_are_comma_separated_and_never_wildcard(
 def test_mock_otp_provider_is_refused_in_production() -> None:
     with pytest.raises(ValidationError, match="not allowed in production"):
         make_settings(app_env="production")
+
+
+def test_pool_and_booking_limit_defaults_and_validation() -> None:
+    settings = make_settings()
+    assert (settings.db_pool_size, settings.booking_rate_limit_per_hour) == (10, 20)
+    for name in ("db_pool_size", "booking_rate_limit_per_hour"):
+        for bad in (0, -1):
+            with pytest.raises(ValidationError):
+                make_settings(**{name: bad})

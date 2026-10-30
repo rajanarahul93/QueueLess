@@ -86,6 +86,38 @@ class ServiceUnavailable(DomainError):
     status = 503
     title = "Service unavailable"
 
+    def __init__(self, detail: str | None = None, *, retry_after_sec: int | None = None) -> None:
+        super().__init__(detail)
+        if retry_after_sec is not None:
+            self.headers["Retry-After"] = str(retry_after_sec)
+
+
+class SlotTaken(DomainError):
+    code = "SLOT_TAKEN"
+    status = 409
+    title = "Slot taken"
+
+    def __init__(self, next_slots: list[dict[str, object]]) -> None:
+        super().__init__("That time was just booked", next_slots=next_slots)
+
+
+class InvalidTransition(DomainError):
+    code = "INVALID_TRANSITION"
+    status = 409
+    title = "Invalid transition"
+
+
+class BookingRestricted(DomainError):
+    code = "BOOKING_RESTRICTED"
+    status = 403
+    title = "Booking restricted"
+
+
+class BookingLimitReached(DomainError):
+    code = "BOOKING_LIMIT_REACHED"
+    status = 409
+    title = "Booking limit reached"
+
 
 class OtpInvalid(DomainError):
     code = "OTP_INVALID"
