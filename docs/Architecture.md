@@ -1,6 +1,6 @@
 # QueueLess — Architecture (single source of truth for structure)
 
-Derived from `docs/source-architecture.md` and `docs/PRD.md`. FR/NFR ids refer to the PRD.
+Derived from the original project brief and `docs/PRD.md`. FR/NFR ids refer to the PRD.
 
 **Marking convention.** Anything tagged **[added]** is not in the source document; it is a design addition needed to make the stated requirements implementable. All **[added]** items are approved (PRD D5). Resolved gaps are marked in [Contradictions and gaps](#10-contradictions-and-gaps-found). Versions the source does not state are marked "pin at scaffold" rather than guessed.
 
@@ -109,7 +109,7 @@ Source layout, plus a few files marked **[added]** that any runnable scaffold ne
 
 ```text
 queueless/
-  docs/                    # PRD.md, Architecture.md, Rules.md, Phases.md, source-architecture.md
+  docs/                    # PRD.md, Architecture.md, Design.md
   backend/
     pyproject.toml         # [added] Python deps and tool config
     Dockerfile             # [added] one image, run as `api` or `worker`
@@ -329,7 +329,7 @@ Source codes: `SLOT_TAKEN` (409), `INVALID_TRANSITION` (409), `QUEUE_CLOSED` (40
 
 `/healthz` is the only unversioned path; every other route is under `/v1`.
 
-Staff and owner routes check `business_members` on every call (FR-27). Stream URLs carry `stream_token` in the query string, so request logs must redact that parameter (Rules R5.2).
+Staff and owner routes check `business_members` on every call (FR-27). Stream URLs carry `stream_token` in the query string, so request logs must redact that parameter (tokens are never logged).
 
 ## 7. Concurrency strategy
 

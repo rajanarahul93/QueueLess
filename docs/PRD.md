@@ -1,6 +1,6 @@
 # QueueLess — Product Requirements Document (v1)
 
-Source: `docs/source-architecture.md` (Oct 20, 2026) plus project-owner instructions. Requirements are numbered for cross-reference (FR-n, NFR-n). Resolved choices are in [Decisions](#8-decisions); the one undecided item is in [Open questions](#9-open-questions).
+Source: the original project brief (Oct 20, 2026) plus project-owner decisions. Requirements are numbered for cross-reference (FR-n, NFR-n). Resolved choices are in [Decisions](#8-decisions); the one undecided item is in [Open questions](#9-open-questions).
 
 ## 1. Problem statement and goals
 
@@ -125,7 +125,7 @@ Each feature lists user stories and acceptance criteria (AC) as testable stateme
 - FR-12. Skip returns the token to `waiting` with `queued_at = now()` and priority unchanged (back of its tier); `joined_at` never changes. Max two skips, then `no_show`.
 - FR-13. Worker sweeper marks called tokens `no_show` after the grace period (`grace_period_min`, default 5); staff may mark manually; each no-show increments a per-customer counter; three no-shows block advance booking for that customer (walk-in tokens remain allowed).
 - FR-17. Priority levels 0/1/2 set by staff only; waiting-time promotion by one level past `promotion_wait_limit_min` (default 20).
-- FR-18. Checked-in appointments get priority to be called within their slot, with `walk_in_ratio` (default 1 walk-in per 2 appointments); late arrivals fall back to normal.
+- FR-18. Checked-in appointments get priority to be called within their slot, with `walk_in_ratio` (default 1 walk-in per 2 appointments); late arrivals fall back to normal. Ordering follows D23 and D24.
 - FR-29. Tokens use optimistic locking (`version`) against racing staff/customer actions.
 
 **ETA**
@@ -225,7 +225,7 @@ Resolved from the source's open questions and gaps (Architecture §10).
 - **D5 Approved additions.** All **[added]** items in Architecture §5 and §6 (columns, `refresh_tokens`, `audit_log`, extra error codes, OTP endpoints); `POST /businesses`; `stream_token` returned by `GET /tokens/{id}` (G-8); `queue_tokens.predicted_wait_sec int NULL` stored at join time.
 - **D6 Defaults** (in `businesses.settings`): `grace_period_min` 5, `reschedule_cutoff_min` 120, `promotion_wait_limit_min` 20, `walk_in_ratio` 1 walk-in per 2 appointments, `running_late_threshold_min` 10. Three no-shows block advance booking (walk-in tokens still allowed). Slot hold is not built in v1.
 - **D7 Notifications v1.** In-app live updates over SSE only, including "running late" as an event. No email or SMS except OTP. The notification adapter and mock provider stay.
-- **D8 Engineering rules.** See Rules.md (no repository modules; raw SQL only in migrations and commented locking queries).
+- **D8 Engineering rules.** No repository modules; raw SQL only in migrations and commented locking queries.
 - **D9 Non-functional targets.** Customer app: 360 px minimum width, latest two versions of Chrome and Safari, no installable PWA. No availability SLA in v1. The 1 s update latency is a p95 measured at the Phase 4 test load.
 
 - **D10 Queue creation.** A day's `queues` row is created lazily on first access (customer join, check-in, staff opening the console, or `GET /businesses/{id}/queue`) with `INSERT ... ON CONFLICT (resource_id, queue_date) DO NOTHING`, status `open`, then locked `FOR UPDATE` for the token increment. No midnight job. (Source gap, formerly open question 7)
@@ -240,6 +240,14 @@ Resolved from the source's open questions and gaps (Architecture §10).
 - **D19 Business settings and staff accounts.** `PATCH /businesses/{id}` (owner: name, address, open_hours, timezone, settings with validated min/max bounds for each D6 key). `POST /auth/register` creates owner accounts only. The owner creates staff with `POST /businesses/{id}/staff {name, email, initial_password}`, which also creates the `business_members` row with role `staff`, and removes them with `DELETE /businesses/{id}/staff/{user_id}`. (FR-1, FR-39)
 - **D20 Browser auth and stream auth.** Production uses one custom domain: web at `app.<domain>`, api at `api.<domain>`, so the refresh-token cookie is same-site (HttpOnly, Secure, SameSite=Lax, `Domain=.<domain>`); CORS allows only the web origin, with credentials. Local development runs both on localhost. Staff streams also use a signed short-lived stream token: `POST /queues/{id}/stream-token` (staff, membership checked) and `?stream_token=` on `GET /queues/{id}/stream`, so no stream needs an Authorization header or cookie. (FR-26, FR-35, FR-40)
 - **D21 Staff action bar.** The primary button is state-driven and acts on the token the staff member has selected, or on the token they most recently called if none is selected: Call next (when they have no active token), then Start (token is `called`), then Complete (token is `in_service`). Skip and No-show are secondary buttons acting on that same token. Token detail history shows only timestamps from the token row (joined, called, started, completed) plus skip count; there is no per-event history.
+- **D22 Walk-in ratio.** Derived from the call history, no schema change: when the last `walk_in_ratio.appointments` tokens called in this queue today (ordered by `called_at`) all have source `appointment`, the next call-next goes to the oldest waiting walk-in token (by `queued_at`) if one exists and no priority-2 token is waiting; otherwise the normal order applies.
+- **D23 Appointment ordering.** An appointment token checked in on time gets `queued_at` equal to the slot start (not the check-in time); `joined_at` stays the check-in time. The `priority` column stays staff-only (0, 1, 2). Order is still `priority DESC, queued_at ASC`, so on-time appointments are called near their slot without using priority.
+- **D24 Check-in window and late arrivals.** Check-in opens 30 minutes before the slot start and closes at the slot end (start plus service duration). Check-in up to slot start plus `grace_period_min` is on time. After that, until the slot end, it is late: `queued_at` is the check-in time and priority stays 0, so the token is treated like a walk-in. After the slot end check-in returns `INVALID_TRANSITION` and the customer can take a walk-in token.
+- **D25 Promotion.** A worker job runs every minute and promotes waiting tokens with priority 0 whose wait (now minus `joined_at`) exceeds `promotion_wait_limit_min` to priority 1, once and never higher. A promoted token is indistinguishable from a staff-set 1. A delay of up to about one minute is accepted.
+- **D26 Queue states.** `paused`: no new joins or check-ins, staff keep calling and serving, and the queue can be resumed. `closed`: no new joins or check-ins, staff finish the tokens already waiting, and the queue cannot be reopened the same day.
+- **D27 End of day.** At business-local midnight a worker job cancels tokens that are `waiting` or `called` (not `in_service`) and sets the queue to `closed`. What happens to the linked appointment status is decided in the Phase 3D plan.
+- **D28 Concurrent service.** The server enforces no limit on `called` or `in_service` tokens per queue in v1; the staff UI prevents double calls. Known gap.
+- **D29 No-shows.** A token that becomes `no_show` (sweeper, staff action or third skip) sets its appointment to `no_show` when the source is `appointment`, and adds 1 to `users.no_show_count` exactly once per token.
 
 ## 9. Open questions
 
