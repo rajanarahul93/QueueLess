@@ -2,21 +2,36 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, insert, select
 from sqlalchemy.dialects.postgresql import Range
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NotFound, ValidationFailed
+from app.core.errors import (
+    BookingLimitReached,
+    BookingRestricted,
+    NotFound,
+    ServiceUnavailable,
+    SlotTaken,
+    ValidationFailed,
+)
 from app.core.timezones import get_zone
-from app.models import Appointment, Business, Resource, Service
+from app.models import Appointment, Business, Resource, Service, User
 from app.models.appointment import ACTIVE_STATUSES
-from app.schemas.appointment import AvailabilityOut, SlotOut
+from app.schemas.appointment import AppointmentOut, AvailabilityOut, SlotOut
 
 GRID_STEP = timedelta(minutes=15)
 MAX_DAYS_AHEAD = 60
+NO_SHOW_BOOKING_LIMIT = 3  # PRD D6: this many no-shows block advance booking
+MAX_ACTIVE_BOOKINGS = 5  # FR-34: active appointments per customer that end in the future
+NEXT_SLOT_COUNT = 3
+DEADLOCK_RETRIES = 2
+EXCLUSION_VIOLATION = "23P01"
+DEADLOCK_DETECTED = "40P01"
+OVERLAP_CONSTRAINT = "no_overlap"
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
@@ -106,12 +121,16 @@ def parse_day(raw: str | None, zone: ZoneInfo, now: datetime) -> date:
         day = date.fromisoformat(raw)
     except ValueError:
         raise ValidationFailed(["query", "date"], "Use YYYY-MM-DD") from None
+    check_day(day, zone, now, ["query", "date"])
+    return day
+
+
+def check_day(day: date, zone: ZoneInfo, now: datetime, loc: list[str]) -> None:
     today = now.astimezone(zone).date()
     if day < today:
-        raise ValidationFailed(["query", "date"], "Date is in the past")
+        raise ValidationFailed(loc, "Date is in the past")
     if day > today + timedelta(days=MAX_DAYS_AHEAD):
-        raise ValidationFailed(["query", "date"], f"At most {MAX_DAYS_AHEAD} days ahead")
-    return day
+        raise ValidationFailed(loc, f"At most {MAX_DAYS_AHEAD} days ahead")
 
 
 async def find_service(
@@ -150,27 +169,38 @@ async def get_availability(
     )
     if resource is None:
         raise NotFound("No active resource")
+    slots = await day_slots(session, business, service, resource.id, day, now)
+    return AvailabilityOut(
+        timezone=business.timezone, slots=[slot_out(s, zone, resource.id) for s in slots]
+    )
+
+
+def slot_out(slot: Slot, zone: ZoneInfo, resource_id: uuid.UUID) -> SlotOut:
+    return SlotOut(
+        start=slot.start.astimezone(zone).isoformat(),
+        end=slot.end.astimezone(zone).isoformat(),
+        resource_id=resource_id,
+    )
+
+
+async def day_slots(
+    session: AsyncSession,
+    business: Business,
+    service: Service,
+    resource_id: uuid.UUID,
+    day: date,
+    now: datetime,
+) -> list[Slot]:
+    zone = get_zone(business.timezone)
     day_hours: list[dict[str, Any]] = business.open_hours.get(WEEKDAYS[day.weekday()], [])
     intervals = expand_day(day_hours, day, zone)
-    duration = timedelta(minutes=service.duration_min)
+    if not intervals:
+        return []
     buffer = timedelta(minutes=service.buffer_min)
-    slots: list[Slot] = []
-    if intervals:
-        lower = min(i.start for i in intervals)
-        upper = max(i.end for i in intervals) + buffer
-        busy = await _busy_ranges(session, resource.id, lower, upper)
-        slots = free_slots(intervals, duration, buffer, busy, now)
-    return AvailabilityOut(
-        timezone=business.timezone,
-        slots=[
-            SlotOut(
-                start=s.start.astimezone(zone).isoformat(),
-                end=s.end.astimezone(zone).isoformat(),
-                resource_id=resource.id,
-            )
-            for s in slots
-        ],
-    )
+    lower = min(i.start for i in intervals)
+    upper = max(i.end for i in intervals) + buffer
+    busy = await _busy_ranges(session, resource_id, lower, upper)
+    return free_slots(intervals, timedelta(minutes=service.duration_min), buffer, busy, now)
 
 
 async def _busy_ranges(
@@ -185,3 +215,168 @@ async def _busy_ranges(
         )
     )
     return [(r.lower, r.upper) for r in rows if r.lower is not None and r.upper is not None]
+
+
+@dataclass(frozen=True)
+class BookingTarget:
+    business: Business
+    service: Service
+    resource: Resource
+    start: datetime
+
+
+async def find_bookable(
+    session: AsyncSession, service_id: uuid.UUID, resource_id: uuid.UUID, start: datetime
+) -> BookingTarget:
+    """404 for an unknown, inactive or foreign service or resource. The business comes from the
+    service, so a resource of another business can never match."""
+    row = (
+        await session.execute(
+            select(Service, Business)
+            .join(Business, Business.id == Service.business_id)
+            .where(Service.id == service_id, Service.is_active)
+        )
+    ).one_or_none()
+    if row is None:
+        raise NotFound("Service not found")
+    service, business = row
+    resource = await session.scalar(
+        select(Resource).where(
+            Resource.id == resource_id, Resource.business_id == business.id, Resource.is_active
+        )
+    )
+    if resource is None:
+        raise NotFound("Resource not found")
+    # Detached, so the rollback in book_appointment cannot expire what the retry still reads.
+    session.expunge_all()
+    return BookingTarget(business, service, resource, start)
+
+
+def check_start(target: BookingTarget, now: datetime) -> None:
+    """Deterministic rules only; busy ranges are never read before the insert (R3.1)."""
+    zone = get_zone(target.business.timezone)
+    loc = ["body", "start"]
+    local_day = target.start.astimezone(zone).date()
+    check_day(local_day, zone, now, loc)
+    if target.start <= now:
+        raise ValidationFailed(loc, "Start is in the past")
+    day_hours: list[dict[str, Any]] = target.business.open_hours.get(
+        WEEKDAYS[local_day.weekday()], []
+    )
+    duration = timedelta(minutes=target.service.duration_min)
+    offered = free_slots(expand_day(day_hours, local_day, zone), duration, timedelta(0), [], now)
+    if target.start not in {slot.start for slot in offered}:
+        raise ValidationFailed(loc, "Start is not an available time")
+
+
+def classify_pg_error(error: DBAPIError) -> Literal["overlap", "deadlock"] | None:
+    """Reads the driver's SQLSTATE and constraint name, never the message text."""
+    cause = error.orig.__cause__ if error.orig is not None else None
+    sqlstate = getattr(cause, "sqlstate", None)
+    if sqlstate == EXCLUSION_VIOLATION and getattr(cause, "constraint_name", None) == (
+        OVERLAP_CONSTRAINT
+    ):
+        return "overlap"
+    if sqlstate == DEADLOCK_DETECTED:
+        return "deadlock"
+    return None
+
+
+async def book_appointment(
+    session: AsyncSession, customer_id: uuid.UUID, target: BookingTarget, clock: Callable[[], float]
+) -> AppointmentOut:
+    check_start(target, datetime.fromtimestamp(clock(), UTC))
+    for attempt in range(DEADLOCK_RETRIES + 1):
+        now = datetime.fromtimestamp(clock(), UTC)
+        try:
+            return await _book_once(session, customer_id, target, now)
+        except _InsertFailed as failure:
+            await session.rollback()
+            if failure.kind == "overlap":
+                raise SlotTaken(await _next_slots(session, target, clock)) from None
+            # A deadlock aborts this transaction only; the retry sees the winner's committed row
+            # and fails cleanly with an exclusion violation.
+            if attempt == DEADLOCK_RETRIES:
+                raise ServiceUnavailable("Please retry", retry_after_sec=1) from None
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+class _InsertFailed(Exception):
+    def __init__(self, kind: Literal["overlap", "deadlock"]) -> None:
+        self.kind = kind
+
+
+async def _book_once(
+    session: AsyncSession, customer_id: uuid.UUID, target: BookingTarget, now: datetime
+) -> AppointmentOut:
+    service = target.service
+    # Locking the customer row serializes this customer's bookings, so the cap is exact. NO KEY
+    # UPDATE does not block other transactions' foreign-key checks on the row.
+    no_shows = await session.scalar(
+        select(User.no_show_count).where(User.id == customer_id).with_for_update(key_share=True)
+    )
+    if no_shows is not None and no_shows >= NO_SHOW_BOOKING_LIMIT:
+        raise BookingRestricted("Booking is restricted after repeated no-shows")
+    active = await session.scalar(
+        select(func.count())
+        .select_from(Appointment)
+        .where(
+            Appointment.customer_id == customer_id,
+            Appointment.status.in_(ACTIVE_STATUSES),
+            func.upper(Appointment.during) > now,
+        )
+    )
+    if (active or 0) >= MAX_ACTIVE_BOOKINGS:
+        raise BookingLimitReached(f"At most {MAX_ACTIVE_BOOKINGS} active appointments")
+    stored_end = target.start + timedelta(minutes=service.duration_min + service.buffer_min)
+    try:  # only the insert is classified; anything else propagates
+        row = (
+            await session.execute(
+                insert(Appointment)
+                .values(
+                    business_id=service.business_id,
+                    service_id=service.id,
+                    resource_id=target.resource.id,
+                    customer_id=customer_id,
+                    during=Range(target.start, stored_end, bounds="[)"),
+                    status="booked",
+                )
+                .returning(Appointment.id, Appointment.created_at)
+            )
+        ).one()
+    except DBAPIError as error:
+        kind = classify_pg_error(error)
+        if kind is None:
+            raise
+        raise _InsertFailed(kind) from error
+    await session.commit()
+    zone = get_zone(target.business.timezone)
+    return AppointmentOut(
+        id=row.id,
+        business_id=service.business_id,
+        service_id=service.id,
+        service_name=service.name,
+        resource_id=target.resource.id,
+        start=target.start.astimezone(zone).isoformat(),
+        end=(target.start + timedelta(minutes=service.duration_min)).astimezone(zone).isoformat(),
+        status="booked",
+        created_at=row.created_at.astimezone(zone).isoformat(),
+    )
+
+
+async def _next_slots(
+    session: AsyncSession, target: BookingTarget, clock: Callable[[], float]
+) -> list[dict[str, object]]:
+    """A new read after the rollback: up to 3 later slots on the same local date."""
+    zone = get_zone(target.business.timezone)
+    day = target.start.astimezone(zone).date()
+    slots = await day_slots(
+        session,
+        target.business,
+        target.service,
+        target.resource.id,
+        day,
+        datetime.fromtimestamp(clock(), UTC),
+    )
+    later = [slot for slot in slots if slot.start > target.start][:NEXT_SLOT_COUNT]
+    return [slot_out(slot, zone, target.resource.id).model_dump(mode="json") for slot in later]

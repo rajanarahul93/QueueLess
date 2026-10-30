@@ -6,9 +6,9 @@ from sqlalchemy.ext.asyncio import (
 )
 
 
-def create_engine(url: str) -> AsyncEngine:
+def create_engine(url: str, pool_size: int = 10) -> AsyncEngine:
     """Called once at startup and injected (R1.3); there is deliberately no module-level engine."""
-    return create_async_engine(url)
+    return create_async_engine(url, pool_size=pool_size)
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
