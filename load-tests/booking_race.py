@@ -18,7 +18,7 @@ import subprocess
 import sys
 import uuid
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -84,38 +84,45 @@ async def owner_headers(client: httpx.AsyncClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {logged_in.json()['access_token']}"}
 
 
+async def setup_business(client: httpx.AsyncClient, day: date) -> dict[str, str]:
+    """Owner, business (UTC, open all day every day) and a 30-minute service with a 10-minute
+    buffer; returns the ids a booking body needs."""
+    owner = await owner_headers(client)
+    every_day = {d: [{"open": "00:00", "close": "23:59"}] for d in "mon tue wed thu fri sat sun".split()}
+    business = await client.post(
+        "/businesses",
+        headers=owner,
+        json={"name": "Race", "category": "demo", "timezone": "UTC", "open_hours": every_day},
+    )
+    business.raise_for_status()
+    business_id = business.json()["id"]
+    service = await client.post(
+        f"/businesses/{business_id}/services",
+        headers=owner,
+        json={"name": "Visit", "duration_min": 30, "buffer_min": 10, "price": "1.00"},
+    )
+    service.raise_for_status()
+    availability = await client.get(
+        f"/businesses/{business_id}/availability",
+        params={"service_id": service.json()["id"], "date": day.isoformat()},
+        headers=owner,
+    )
+    availability.raise_for_status()
+    resource_id = availability.json()["slots"][0]["resource_id"]
+    return {"service_id": service.json()["id"], "resource_id": resource_id}
+
+
 async def main() -> int:
     day = (datetime.now(UTC) + timedelta(days=2)).date()
     limits = httpx.Limits(max_connections=CUSTOMERS * 2)
     async with httpx.AsyncClient(base_url=API, timeout=60, limits=limits) as client:
-        owner = await owner_headers(client)
-        every_day = {d: [{"open": "00:00", "close": "23:59"}] for d in "mon tue wed thu fri sat sun".split()}
-        business = await client.post(
-            "/businesses",
-            headers=owner,
-            json={"name": "Race", "category": "demo", "timezone": "UTC", "open_hours": every_day},
-        )
-        business.raise_for_status()
-        business_id = business.json()["id"]
-        service = await client.post(
-            f"/businesses/{business_id}/services",
-            headers=owner,
-            json={"name": "Visit", "duration_min": 30, "buffer_min": 10, "price": "1.00"},
-        )
-        service.raise_for_status()
-        availability = await client.get(
-            f"/businesses/{business_id}/availability",
-            params={"service_id": service.json()["id"], "date": day.isoformat()},
-            headers=owner,
-        )
-        availability.raise_for_status()
-        resource_id = availability.json()["slots"][0]["resource_id"]
+        ids = await setup_business(client, day)
         customers = mint_customers(CUSTOMERS)
 
         failures = 0
         for round_no in range(ROUNDS):
             start = datetime(day.year, day.month, day.day, 9 + round_no, tzinfo=UTC).isoformat()
-            body = {"service_id": service.json()["id"], "resource_id": resource_id, "start": start}
+            body = ids | {"start": start}
             responses = await asyncio.gather(
                 *(client.post("/appointments", json=body, headers=h) for h in customers)
             )

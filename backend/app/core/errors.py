@@ -107,6 +107,12 @@ class InvalidTransition(DomainError):
     title = "Invalid transition"
 
 
+class RescheduleCutoff(DomainError):
+    code = "RESCHEDULE_CUTOFF"
+    status = 409
+    title = "Reschedule cutoff"
+
+
 class BookingRestricted(DomainError):
     code = "BOOKING_RESTRICTED"
     status = 403

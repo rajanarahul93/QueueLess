@@ -21,10 +21,13 @@ from app.core.dependencies import (
 from app.core.errors import Forbidden, ValidationFailed
 from app.core.idempotency import IdempotentRoute, idempotency
 from app.core.rate_limit import RateLimiter, get_rate_limiter, user_rate_limit
+from app.models import Appointment
 from app.schemas.appointment import (
     AppointmentCreate,
     AppointmentOut,
     AppointmentPage,
+    RescheduledOut,
+    RescheduleIn,
     StaffAppointmentPage,
 )
 from app.services import appointments as appointment_service
@@ -73,6 +76,41 @@ async def book(
     target: BookingTarget, user: CurrentUser, session: SessionDep, clock: ClockDep
 ) -> AppointmentOut:
     return await booking_service.book_appointment(session, user.user_id, target, clock)
+
+
+async def own_appointment(
+    appointment_id: uuid.UUID, user: CurrentUser, session: SessionDep
+) -> Appointment:
+    """404 for another customer's appointment; runs before the rate limit."""
+    return await appointment_service.find_own(session, appointment_id, user.user_id)
+
+
+OwnAppointment = Annotated[Appointment, Depends(own_appointment)]
+
+
+@router.patch(
+    "/{appointment_id}/reschedule",
+    dependencies=[
+        Depends(require_customer_account),
+        Depends(own_appointment),
+        Depends(booking_rate_limit),  # shares the booking bucket
+        Depends(idempotency),
+    ],
+)
+async def reschedule(
+    old: OwnAppointment,
+    body: RescheduleIn,
+    user: CurrentUser,
+    session: SessionDep,
+    clock: ClockDep,
+) -> RescheduledOut:
+    target = await booking_service.find_bookable(
+        session, old.service_id, old.resource_id, body.start
+    )
+    new = await booking_service.book_appointment(
+        session, user.user_id, target, clock, replaces=old.id
+    )
+    return RescheduledOut(**new.model_dump(), rescheduled_from_id=old.id)
 
 
 @router.delete(
