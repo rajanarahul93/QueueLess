@@ -379,8 +379,8 @@ async def test_a_cancelled_request_releases_the_idempotency_claim(api: Api) -> N
 # --- cancel ---
 
 
-async def book_one(w: World, headers: Headers, hour: int = 9) -> str:
-    response = await w.book(headers, local(hour))
+async def book_one(w: World, headers: Headers, hour: int = 9, minute: int = 0) -> str:
+    response = await w.book(headers, local(hour, minute))
     assert response.status_code == 201, response.text
     return str(response.json()["id"])
 

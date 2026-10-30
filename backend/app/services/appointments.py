@@ -73,6 +73,20 @@ async def cancel_appointment(
         )
 
 
+async def find_own(
+    session: AsyncSession, appointment_id: uuid.UUID, customer_id: uuid.UUID
+) -> Appointment:
+    """Another customer's appointment is a 404, the same as a missing one."""
+    appointment = await session.scalar(
+        select(Appointment).where(
+            Appointment.id == appointment_id, Appointment.customer_id == customer_id
+        )
+    )
+    if appointment is None:
+        raise NotFound("Appointment not found")
+    return appointment
+
+
 def _cursor_start(cursor: str) -> tuple[datetime, uuid.UUID]:
     raw_start, appointment_id = decode_cursor(cursor)
     try:

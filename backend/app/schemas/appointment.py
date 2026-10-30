@@ -24,6 +24,12 @@ class AppointmentCreate(BaseModel):
     start: AwareDatetime  # a naive timestamp is a 422
 
 
+class RescheduleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: AwareDatetime  # service and resource cannot change on reschedule in v1
+
+
 class CustomerOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -41,6 +47,10 @@ class AppointmentOut(BaseModel):
     end: str  # start + the service's current duration_min; the stored buffer is not shown
     status: str
     created_at: str
+
+
+class RescheduledOut(AppointmentOut):
+    rescheduled_from_id: uuid.UUID
 
 
 class StaffAppointmentOut(AppointmentOut):
