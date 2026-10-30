@@ -1,12 +1,15 @@
 import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select, tuple_, type_coerce, update
+from sqlalchemy import delete, func, select, tuple_, type_coerce, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NotFound
-from app.models import Business, BusinessMember, Resource, Service, User
+from app.core.errors import NotFound, ValidationFailed
+from app.models import Appointment, Business, BusinessMember, Resource, Service, User
+from app.models.appointment import ACTIVE_STATUSES
 from app.schemas.business import (
     BusinessCreate,
     BusinessUpdate,
@@ -45,11 +48,16 @@ async def create_business(
 
 
 async def update_business(
-    session: AsyncSession, business_id: uuid.UUID, data: BusinessUpdate
+    session: AsyncSession,
+    business_id: uuid.UUID,
+    data: BusinessUpdate,
+    clock: Callable[[], float],
 ) -> Business:
     """One UPDATE: `settings || patch` is merged by Postgres under the row lock, so parallel
     PATCHes of different keys both survive."""
     values = data.model_dump(exclude_unset=True, exclude={"settings"})
+    if "timezone" in values:
+        await _check_timezone_change(session, business_id, values["timezone"], clock)
     if data.settings is not None:
         patch = data.settings.model_dump(exclude_unset=True)
         values["settings"] = Business.settings.op("||")(type_coerce(patch, JSONB))
@@ -60,6 +68,32 @@ async def update_business(
     ).scalar_one()
     await session.commit()
     return business
+
+
+async def _check_timezone_change(
+    session: AsyncSession, business_id: uuid.UUID, new_zone: str, clock: Callable[[], float]
+) -> None:
+    """Stored appointment instants stay valid, but the local grid and display would shift under
+    a live appointment, so a change is refused while one is active and not yet over.
+    A booking racing this check can still slip through (accepted)."""
+    if new_zone == await session.scalar(
+        select(Business.timezone).where(Business.id == business_id)
+    ):
+        return
+    now = datetime.fromtimestamp(clock(), UTC)
+    pending = await session.scalar(
+        select(Appointment.id)
+        .where(
+            Appointment.business_id == business_id,
+            Appointment.status.in_(ACTIVE_STATUSES),
+            func.upper(Appointment.during) > now,
+        )
+        .limit(1)
+    )
+    if pending is not None:
+        raise ValidationFailed(
+            ["body", "timezone"], "Cannot change the time zone while appointments are active"
+        )
 
 
 async def list_my_businesses(

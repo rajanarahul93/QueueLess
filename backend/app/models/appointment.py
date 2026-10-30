@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, NowTs, UuidPk
 
+ACTIVE_STATUSES = ("booked", "checked_in", "in_service")
 ACTIVE_APPOINTMENT = "status IN ('booked', 'checked_in', 'in_service')"
 
 

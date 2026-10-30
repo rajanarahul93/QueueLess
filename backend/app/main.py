@@ -9,6 +9,8 @@ from redis.asyncio import Redis
 from app.api.v1 import auth, businesses
 from app.core.config import Settings
 from app.core.errors import register_error_handlers
+from app.core.idempotency import Replay, handle_replay
+from app.core.timezones import zone_names
 from app.db.session import create_engine, create_session_factory
 from app.services.notifications import create_sms_provider
 
@@ -19,6 +21,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     `clock` is injectable so tests control OTP expiry and rate-limit windows without sleeping.
     """
     resolved = settings or Settings()
+    zone_names()  # a broken tzdata install must stop the app at startup
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -46,6 +49,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID"],
     )
     register_error_handlers(app)
+    app.add_exception_handler(Replay, handle_replay)  # type: ignore[arg-type]
     app.include_router(auth.router, prefix="/v1")
     app.include_router(businesses.router, prefix="/v1")
 

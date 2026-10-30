@@ -1,18 +1,25 @@
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import (
+    CurrentUser,
+    get_clock,
     get_current_user,
     get_session,
     require_business_member,
     require_owner_account,
     require_staff_or_owner_account,
 )
+from app.core.idempotency import IdempotentRoute, idempotency
 from app.core.rate_limit import rate_limit, user_rate_limit
 from app.core.security import AccessClaims
+from app.models import Business, Service
+from app.schemas.appointment import AvailabilityOut
 from app.schemas.business import (
     BusinessCreate,
     BusinessOut,
@@ -29,13 +36,16 @@ from app.schemas.business import (
     decode_cursor,
     encode_cursor,
 )
+from app.services import booking as booking_service
 from app.services import business as business_service
 
-router = APIRouter(prefix="/businesses", tags=["businesses"])
+router = APIRouter(prefix="/businesses", tags=["businesses"], route_class=IdempotentRoute)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+ClockDep = Annotated[Callable[[], float], Depends(get_clock)]
 # Dependency order is the error order: 401, then 404/403, then 429, then body validation.
 OwnerAccount = Annotated[AccessClaims, Depends(require_owner_account)]
+IDEMPOTENT = Depends(idempotency)
 SERVICE_WRITE_LIMIT = Depends(user_rate_limit("service_write_user", limit=60, window_sec=3600))
 
 
@@ -45,6 +55,7 @@ SERVICE_WRITE_LIMIT = Depends(user_rate_limit("service_write_user", limit=60, wi
     dependencies=[
         Depends(require_owner_account),
         Depends(user_rate_limit("business_create_user", limit=10, window_sec=3600)),
+        Depends(idempotency),
     ],
 )
 async def create_business(
@@ -112,7 +123,7 @@ async def list_services(
 @router.post(
     "/{business_id}/services",
     status_code=201,
-    dependencies=[Depends(require_business_member("owner")), SERVICE_WRITE_LIMIT],
+    dependencies=[Depends(require_business_member("owner")), SERVICE_WRITE_LIMIT, IDEMPOTENT],
 )
 async def create_service(
     business_id: uuid.UUID, body: ServiceCreate, session: SessionDep
@@ -123,7 +134,7 @@ async def create_service(
 
 @router.patch(
     "/{business_id}/services/{service_id}",
-    dependencies=[Depends(require_business_member("owner")), SERVICE_WRITE_LIMIT],
+    dependencies=[Depends(require_business_member("owner")), SERVICE_WRITE_LIMIT, IDEMPOTENT],
 )
 async def update_service(
     business_id: uuid.UUID, service_id: uuid.UUID, body: ServiceUpdate, session: SessionDep
@@ -137,11 +148,11 @@ STAFF_CREATE_LIMIT = Depends(user_rate_limit("staff_create_user", limit=20, wind
 STAFF_DELETE_LIMIT = Depends(user_rate_limit("staff_delete_user", limit=60, window_sec=3600))
 
 
-@router.patch("/{business_id}", dependencies=[OwnerOnly])
+@router.patch("/{business_id}", dependencies=[OwnerOnly, IDEMPOTENT])
 async def update_business(
-    business_id: uuid.UUID, body: BusinessUpdate, session: SessionDep
+    business_id: uuid.UUID, body: BusinessUpdate, session: SessionDep, clock: ClockDep
 ) -> BusinessOwnerOut:
-    business = await business_service.update_business(session, business_id, body)
+    business = await business_service.update_business(session, business_id, body, clock)
     return BusinessOwnerOut.model_validate(business)
 
 
@@ -163,6 +174,7 @@ async def list_staff(business_id: uuid.UUID, session: SessionDep) -> list[StaffO
     dependencies=[
         OwnerOnly,
         STAFF_CREATE_LIMIT,
+        IDEMPOTENT,
     ],
 )
 async def create_staff(
@@ -182,3 +194,39 @@ async def create_staff(
 )
 async def remove_staff(business_id: uuid.UUID, user_id: uuid.UUID, session: SessionDep) -> None:
     await business_service.remove_staff(session, business_id, user_id)
+
+
+@dataclass(frozen=True)
+class AvailabilityTarget:
+    business: Business
+    service: Service
+
+
+async def availability_target(
+    business_id: uuid.UUID,
+    user: CurrentUser,
+    session: SessionDep,
+    service_id: Annotated[str | None, Query()] = None,
+) -> AvailabilityTarget:
+    """401, then business 404, then service 404; runs before the rate limit and date checks."""
+    business = await business_service.get_business(session, business_id)
+    service = await booking_service.find_service(session, business_id, service_id)
+    return AvailabilityTarget(business, service)
+
+
+@router.get(
+    "/{business_id}/availability",
+    dependencies=[
+        Depends(availability_target),
+        Depends(user_rate_limit("availability_user", limit=120, window_sec=60)),
+    ],
+)
+async def availability(
+    target: Annotated[AvailabilityTarget, Depends(availability_target)],
+    session: SessionDep,
+    clock: ClockDep,
+    date: Annotated[str | None, Query()] = None,  # parsed in the service so 404s come first
+) -> AvailabilityOut:
+    return await booking_service.get_availability(
+        session, target.business, target.service, date, clock
+    )
