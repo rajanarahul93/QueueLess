@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -36,8 +37,10 @@ from app.schemas.business import (
     decode_cursor,
     encode_cursor,
 )
+from app.schemas.queue import QueueOut
 from app.services import booking as booking_service
 from app.services import business as business_service
+from app.services import queue as queue_service
 
 router = APIRouter(prefix="/businesses", tags=["businesses"], route_class=IdempotentRoute)
 
@@ -230,3 +233,21 @@ async def availability(
     return await booking_service.get_availability(
         session, target.business, target.service, date, clock
     )
+
+
+async def existing_business(business_id: uuid.UUID, user: CurrentUser, session: SessionDep) -> None:
+    """401, then 404 for an unknown business; runs before the rate limit."""
+    await business_service.get_business(session, business_id)
+
+
+@router.get(
+    "/{business_id}/queue",
+    dependencies=[
+        Depends(existing_business),
+        Depends(user_rate_limit("queue_lookup_user", limit=120, window_sec=60)),
+    ],
+)
+async def today_queue(business_id: uuid.UUID, session: SessionDep, clock: ClockDep) -> QueueOut:
+    """Any authenticated user; creates today's queue on first access, so always 200."""
+    now = datetime.fromtimestamp(clock(), UTC)
+    return await queue_service.open_today_queue(session, business_id, now)
