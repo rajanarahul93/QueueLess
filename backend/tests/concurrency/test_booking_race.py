@@ -1,4 +1,4 @@
-"""NFR-3: concurrent bookings through the real HTTP app, Postgres and Redis (Rules R6.4).
+"""NFR-3: concurrent bookings through the real HTTP app, Postgres and Redis.
 
 Every response must be a 201, a SLOT_TAKEN, or (never expected here) a 503 after exhausted
 deadlock retries; a 500 or anything else fails the test. SQLSTATE counts come from the engine's

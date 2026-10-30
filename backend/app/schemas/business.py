@@ -160,7 +160,7 @@ class WalkInRatio(BaseModel):
 
 
 class SettingsPatch(BaseModel):
-    """Bounds per Architecture section 5; omitted keys stay unchanged, null is rejected."""
+    """Each key has a min and max; omitted keys stay unchanged, null is rejected."""
 
     model_config = ConfigDict(extra="forbid")
 
