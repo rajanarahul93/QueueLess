@@ -70,6 +70,17 @@ class RateLimited(DomainError):
         self.headers["Retry-After"] = str(retry_after_sec)
 
 
+class IdempotencyConflict(DomainError):
+    code = "IDEMPOTENCY_CONFLICT"
+    status = 409
+    title = "Idempotency conflict"
+
+    def __init__(self, detail: str, *, in_progress: bool = False) -> None:
+        super().__init__(detail, **({"in_progress": True} if in_progress else {}))
+        if in_progress:
+            self.headers["Retry-After"] = "1"
+
+
 class ServiceUnavailable(DomainError):
     code = "SERVICE_UNAVAILABLE"
     status = 503

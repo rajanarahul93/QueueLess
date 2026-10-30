@@ -143,3 +143,10 @@ def derive_otp_key(settings: Settings) -> bytes:
 def otp_mac(key: bytes, label: str, value: str) -> str:
     """Keyed hash for OTP codes and the Redis ids of phone numbers; the label keeps them apart."""
     return hmac.new(key, f"{label}:{value}".encode(), hashlib.sha256).hexdigest()
+
+
+def derive_idempotency_key(settings: Settings) -> bytes:
+    """Domain-separated from the JWT and OTP keys; it hides keys and request bodies in Redis."""
+    return hmac.new(
+        settings.jwt_secret.encode(), b"queueless/idempotency/v1", hashlib.sha256
+    ).digest()
