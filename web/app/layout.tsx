@@ -1,4 +1,3 @@
-import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { connection } from "next/server";
 import type { ReactNode } from "react";
@@ -8,8 +7,6 @@ import { Providers } from "./providers";
 
 // Variable font, Latin subset, self-hosted by next/font at build time.
 const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-inter" });
-
-export const metadata: Metadata = { title: "QueueLess" };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   // Rendered per request so Next can put the proxy's CSP nonce on its scripts (report-only

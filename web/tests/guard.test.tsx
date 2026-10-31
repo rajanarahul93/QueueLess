@@ -11,9 +11,9 @@ let auth: { status: string; user: { role: string; name: string } | null };
 vi.mock("@/lib/auth/AuthProvider", () => ({ useAuth: () => auth }));
 
 const { RequireRole } = await import("@/lib/auth/RequireRole");
-const OwnerLayout = (await import("@/app/(owner)/layout")).default;
-const StaffLayout = (await import("@/app/(staff)/layout")).default;
-const CustomerLayout = (await import("@/app/(customer)/layout")).default;
+const OwnerPage = (await import("@/app/(owner)/owner/page")).default;
+const StaffPage = (await import("@/app/(staff)/console/page")).default;
+const CustomerPage = (await import("@/app/(customer)/me/page")).default;
 
 function owner(role: string) {
   auth = { status: "signed-in", user: { role, name: "N" } };
@@ -37,20 +37,20 @@ describe("RequireRole", () => {
   });
 
   it.each([
-    ["owner", OwnerLayout, ["owner"], ["customer", "staff", "admin"]],
-    ["staff", StaffLayout, ["staff", "owner"], ["customer", "admin"]],
-    ["customer", CustomerLayout, ["customer"], ["staff", "owner", "admin"]],
-  ] as const)("the %s routes admit only their roles", (_, Layout, allowed, refused) => {
+    ["owner", OwnerPage, ["owner"], ["customer", "staff", "admin"]],
+    ["staff", StaffPage, ["staff", "owner"], ["customer", "admin"]],
+    ["customer", CustomerPage, ["customer"], ["staff", "owner", "admin"]],
+  ] as const)("the %s routes admit only their roles", (_, Page, allowed, refused) => {
     for (const role of allowed) {
       owner(role);
-      const { unmount } = render(<Layout>inside</Layout>);
-      expect(screen.getByText("inside")).toBeTruthy();
+      const { unmount } = render(<Page />);
+      expect(screen.getByText("Signed in as N")).toBeTruthy();
       unmount();
     }
     for (const role of refused) {
       owner(role);
-      const { unmount } = render(<Layout>inside</Layout>);
-      expect(screen.queryByText("inside")).toBeNull();
+      const { unmount } = render(<Page />);
+      expect(screen.queryByText("Signed in as N")).toBeNull();
       expect(screen.getByText("You don't have access to this page")).toBeTruthy();
       unmount();
     }

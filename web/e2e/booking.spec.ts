@@ -14,20 +14,6 @@ const booking = (): Booking => JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).b
 
 async function noAxeViolations(page: Page, screen: string) {
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  // TEMPORARY diagnostics for the Firefox document-title failure; removed with the fix.
-  if (results.violations.some((violation) => violation.id === "document-title")) {
-    const head = await page.evaluate(() => ({
-      title: document.title,
-      titleElements: [...document.querySelectorAll("title")].map((element) => element.outerHTML),
-      readyState: document.readyState,
-      href: location.href,
-      head: [...document.head.children].map(
-        (element) => `${element.tagName.toLowerCase()}${element.getAttribute("name") ? `[name=${element.getAttribute("name")}]` : ""}`,
-      ),
-    }));
-    console.log(`DIAG ${screen} ${JSON.stringify(head)}`);
-    test.info().annotations.push({ type: "document-title", description: JSON.stringify(head) });
-  }
   expect(results.violations.map((violation) => `${screen}: ${violation.id}`)).toEqual([]);
 }
 
@@ -50,9 +36,27 @@ let a: BrowserContext;
 let b: BrowserContext;
 let phoneB: string;
 
+/** Counts the moments the loaded page had no title (a remounted <title> leaves the tab untitled). */
+function countUntitled() {
+  addEventListener("DOMContentLoaded", () => {
+    const counter = window as unknown as { untitled: number };
+    counter.untitled = 0;
+    new MutationObserver(() => {
+      if (!document.title) counter.untitled += 1;
+    }).observe(document.head, { subtree: true, childList: true, characterData: true });
+  });
+}
+
+/** After a client-side navigation the Book page still has its own title, and never lost it. */
+async function expectBookTitle(page: Page) {
+  await expect(page).toHaveTitle(`Book at ${booking().name} · QueueLess`);
+  expect(await page.evaluate(() => (window as unknown as { untitled: number }).untitled)).toBe(0);
+}
+
 async function pickDay(page: Page) {
   await page.getByRole("button", { name: dayButtonName(day), exact: true }).click();
   await expect(page.getByRole("button", { name: dayButtonName(day), exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expectBookTitle(page); // the day is in the URL: picking it is a router.replace
 }
 
 /** Picks a time the way a person does: by clicking its visible label (the radio is hidden). */
@@ -79,6 +83,7 @@ test.beforeAll(({}, testInfo) => {
 test("search finds the business and opens it (signed out)", async ({ page }) => {
   await page.goto(`/b?q=${encodeURIComponent("zzz no such business")}`);
   await expect(page.getByText("No businesses match your search.")).toBeVisible();
+  await expect(page).toHaveTitle("Find a business · QueueLess");
   await noAxeViolations(page, "/b (empty)");
   await page.getByLabel("Name").fill(booking().name);
   await page.getByRole("button", { name: "Search" }).click();
@@ -86,6 +91,7 @@ test("search finds the business and opens it (signed out)", async ({ page }) => 
   await page.getByRole("link", { name: new RegExp(booking().name) }).click();
   await expect(page.getByRole("heading", { level: 1, name: booking().name })).toBeVisible();
   await expect(page.getByText("Times are local to the business (Asia/Kolkata).")).toBeVisible();
+  await expect(page).toHaveTitle(`${booking().name} · QueueLess`);
   await noAxeViolations(page, "/b/[id]");
   await page.goto(`/b?q=${encodeURIComponent(booking().name)}`);
   await expect(page.getByRole("link", { name: new RegExp(booking().name) })).toBeVisible();
@@ -94,6 +100,7 @@ test("search finds the business and opens it (signed out)", async ({ page }) => 
 
 test("Book asks for sign-in and comes back to the same service", async ({ browser }) => {
   a = await browser.newContext();
+  await a.addInitScript(countUntitled);
   const page = await a.newPage();
   await page.goto(`/b/${booking().id}`);
   await page.getByRole("link", { name: "Book Checkup" }).click();
@@ -101,6 +108,7 @@ test("Book asks for sign-in and comes back to the same service", async ({ browse
   await signInWithOtp(page);
   await expect(page).toHaveURL(new RegExp(`/b/${booking().id}/book\\?service=${booking().service}`));
   await expect(page.getByRole("heading", { name: `Book at ${booking().name}` })).toBeVisible();
+  await expectBookTitle(page);
 });
 
 test("a slot is booked and shown in the business's time, not the browser's", async () => {
@@ -118,6 +126,7 @@ test("a slot is booked and shown in the business's time, not the browser's", asy
 
 test("two customers race for one slot: the second is offered the next ones and books", async ({ browser }) => {
   b = await browser.newContext();
+  await b.addInitScript(countUntitled);
   const pageB = await b.newPage();
   await pageB.goto(`/b/${booking().id}/book?service=${booking().service}&date=${day}`);
   phoneB = await signInWithOtp(pageB);

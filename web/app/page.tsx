@@ -3,6 +3,7 @@ import Link from "next/link";
 export default function Home() {
   return (
     <section className="mx-auto max-w-[480px] px-4 py-12">
+      <title>Home · QueueLess</title>
       <h1 className="text-h1 font-semibold">QueueLess</h1>
       <p className="mt-2 text-body-lg text-muted">Book a slot or join the queue, and see your turn live.</p>
       <nav className="mt-8 flex flex-col gap-3">

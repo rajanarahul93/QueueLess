@@ -59,8 +59,11 @@ function EmailSignIn() {
 
 export default function SignInPage() {
   return (
-    <Suspense>
-      <EmailSignIn />
-    </Suspense>
+    <>
+      <title>Staff and owner sign in · QueueLess</title>
+      <Suspense>
+        <EmailSignIn />
+      </Suspense>
+    </>
   );
 }

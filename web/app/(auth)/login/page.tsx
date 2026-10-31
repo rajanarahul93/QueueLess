@@ -151,8 +151,11 @@ function PhoneLogin() {
 
 export default function LoginPage() {
   return (
-    <Suspense>
-      <PhoneLogin />
-    </Suspense>
+    <>
+      <title>Sign in with your phone · QueueLess</title>
+      <Suspense>
+        <PhoneLogin />
+      </Suspense>
+    </>
   );
 }

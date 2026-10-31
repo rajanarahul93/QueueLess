@@ -36,6 +36,13 @@ export function useServices(id: string) {
   });
 }
 
+/** The tab title: specific to the route at once, with the business name once it loads. */
+export function BusinessTitle({ id, booking = false }: { id: string; booking?: boolean }) {
+  const name = useBusiness(id).data?.name;
+  const page = booking ? (name ? `Book at ${name}` : "Book a visit") : (name ?? "Business");
+  return <title>{`${page} · QueueLess`}</title>;
+}
+
 export function BusinessDetail({ id }: { id: string }) {
   const business = useBusiness(id);
   const services = useServices(id);
