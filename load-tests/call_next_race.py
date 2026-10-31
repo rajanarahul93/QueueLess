@@ -8,6 +8,7 @@ waiting token was called exactly once.
 
 import asyncio
 import sys
+import time
 import uuid
 from collections import Counter
 
@@ -54,9 +55,11 @@ async def main(count: int) -> int:
         )
         waiting = {r.json()["id"] for r in joins if r.status_code == 201}
         team = [owner, *[await staff_headers(client, owner, business_id) for _ in range(STAFF)]]
+        started = time.perf_counter()
         calls = await asyncio.gather(
             *(client.post(f"/queues/{queue_id}/call-next", headers=team[i % len(team)]) for i in range(count))
         )
+    elapsed_ms = (time.perf_counter() - started) * 1000
     counts = Counter(
         str(r.status_code) if r.status_code < 300 else r.json().get("code", str(r.status_code))
         for r in calls
@@ -64,7 +67,7 @@ async def main(count: int) -> int:
     called = [r.json()["id"] for r in calls if r.status_code == 200]
     exact = len(waiting) == count and sorted(called) == sorted(waiting)
     print(f"N={count}, {len(team)} accounts: joins={len(waiting)} calls={dict(counts)} "
-          f"every waiting token called exactly once: {exact}")
+          f"every waiting token called exactly once: {exact}; call burst {elapsed_ms:.0f} ms")
     return 0 if exact else 1
 
 

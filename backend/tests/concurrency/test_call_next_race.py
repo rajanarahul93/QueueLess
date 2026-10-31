@@ -1,6 +1,7 @@
 """Staff actions under concurrency (NFR-4, FR-29) through the real HTTP app. Any 500 fails."""
 
 import asyncio
+import time
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -67,11 +68,15 @@ async def test_fifty_staff_calls_take_fifty_distinct_tokens_three_times(
         team = await staff_team(w)
         expected = await waiting_tokens(api, w, queue, 50)
         load = Load()
+        started = time.perf_counter()
         with measured(api, load) as states:
             responses = await asyncio.gather(
                 *(tracked(load, call(api, team[i % len(team)], queue)) for i in range(50))
             )
+        elapsed_ms = (time.perf_counter() - started) * 1000
         report(capsys, f"50 call-next on 50 tokens run {run + 1}", api, load, states)
+        with capsys.disabled():
+            print(f"  call-next burst wall-clock: {elapsed_ms:.0f} ms")
         assert load.statuses == {"200": 50}
         called = [r.json()["id"] for r in responses]
         assert len(set(called)) == 50 and set(called) == set(expected)
@@ -217,3 +222,29 @@ async def test_no_shows_in_many_queues_count_exactly(
     report(capsys, "5 no-shows, one customer, 5 queues", api, load, states)
     assert load.statuses == {"200": 5}
     assert await no_shows(api, person.id) == 5
+
+
+async def test_skip_racing_a_customer_leave(api: Api, capsys: pytest.CaptureFixture[str]) -> None:
+    """FR-29: a staff skip and the customer leaving the same called token. Every outcome must be
+    one order of the two actions, never a lost update: skip then leave (both succeed, the
+    leave acts on the now-waiting token), the leave losing its version race (409, token
+    waiting), or leave first (the skip's version is stale: 409, token cancelled)."""
+    outcomes = []
+    w = await world(api)
+    queue = await queue_id(w)
+    for no in range(1, 11):
+        called = await add_token(api, w, queue, no, "called")
+        owner_of_it = customer_headers(api, (await token(api, called)).customer_id)
+        skipped, left = await asyncio.gather(
+            act(api, w.owner, called, "skip", 1), leave(api, owner_of_it, called)
+        )
+        outcomes.append((skipped.status_code, left.status_code))
+        row = await token(api, called)
+        allowed = {
+            (200, 204): ("cancelled", 3),  # skip, then the leave
+            (200, 409): ("waiting", 2),  # the leave lost the version race
+            (409, 204): ("cancelled", 2),  # leave first; the skip was stale
+        }
+        assert allowed.get(outcomes[-1]) == (row.status, row.version), (outcomes[-1], row.status)
+    with capsys.disabled():
+        print(f"\nskip vs leave (skip status, leave status) x10: {outcomes}")
