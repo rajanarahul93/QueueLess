@@ -37,7 +37,40 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # The OpenAPI drift check dumps the backend's schema, so this job also needs Python and uv.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
       - run: npm ci
+      - run: npm test
+      - name: OpenAPI types match the backend
+        run: npm run api:types && git diff --exit-code -- lib/api/schema.d.ts
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+      - run: npm run bundle-size
+
+  # Informational: not a required check until it has been green on main ten times in a row.
+  # The same script runs locally (`web/scripts/e2e-stack.sh --fresh`); its step times go to the
+  # job summary.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Local-only environment for Compose
+        run: |
+          cp .env.example .env
+          sed -i "s/^POSTGRES_USER=.*/POSTGRES_USER=queueless/; s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/; s/^POSTGRES_DB=.*/POSTGRES_DB=queueless/" .env
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npx playwright install --with-deps chromium firefox webkit
+        working-directory: web
+      - run: web/scripts/e2e-stack.sh --fresh
+      - if: failure()
+        run: docker compose logs --no-color api worker web
