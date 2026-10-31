@@ -283,6 +283,7 @@ async def test_version_then_state_errors(api: Api) -> None:
     assert stale.status_code == 409 and code(stale) == "VERSION_CONFLICT"
     illegal = await act(api, w.owner, token, "complete", 1)
     assert illegal.status_code == 409 and code(illegal) == "INVALID_TRANSITION"
+    assert "reason" not in illegal.json()  # only check-in says why
     for action in ("start", "skip", "no-show"):  # none is legal on a waiting token
         response = await act(
             api,

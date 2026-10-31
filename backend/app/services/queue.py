@@ -880,13 +880,15 @@ async def check_in(
     if appointment.status == "checked_in":
         return await _appointment_token(session, appointment.id, now), False
     if appointment.status != "booked":
-        raise InvalidTransition(f"Cannot check in an appointment that is {appointment.status}")
+        raise InvalidTransition(
+            f"Cannot check in an appointment that is {appointment.status}", reason="not_booked"
+        )
     start = appointment.during.lower
     assert start is not None  # stored ranges are always bounded
     if now < start - CHECK_IN_OPENS_BEFORE:
-        raise InvalidTransition("Check-in opens 30 minutes before the slot")
+        raise InvalidTransition("Check-in opens 30 minutes before the slot", reason="too_early")
     if now >= start + timedelta(minutes=duration_min):  # the service time, not the buffer
-        raise InvalidTransition("The slot has ended; take a walk-in token")
+        raise InvalidTransition("The slot has ended; take a walk-in token", reason="too_late")
     on_time = now <= start + timedelta(minutes=business.settings["grace_period_min"])
     # The slot's local day, not today's: a check-in just before midnight joins tomorrow's queue.
     day = start.astimezone(get_zone(business.timezone)).date()

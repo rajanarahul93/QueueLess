@@ -1361,6 +1361,11 @@ export interface components {
         TokenOut: {
             /** Ahead Count */
             ahead_count: number | null;
+            /**
+             * Business Id
+             * Format: uuid
+             */
+            business_id: string;
             eta: components["schemas"]["EtaOut"] | null;
             /**
              * Id
@@ -1389,6 +1394,11 @@ export interface components {
         TokenWithStreamOut: {
             /** Ahead Count */
             ahead_count: number | null;
+            /**
+             * Business Id
+             * Format: uuid
+             */
+            business_id: string;
             eta: components["schemas"]["EtaOut"] | null;
             /** Expires In */
             expires_in: number;

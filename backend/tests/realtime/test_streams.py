@@ -486,6 +486,7 @@ async def test_get_token_with_stream_token(api: Api) -> None:
     headers, detail = await joined(api, queue)
     assert set(detail) == {
         "id",
+        "business_id",
         "queue_id",
         "token_no",
         "status",

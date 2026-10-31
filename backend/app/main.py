@@ -63,6 +63,9 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID"],
         # Without these the browser hides them from the web app (OTP countdown, replay notice).
         expose_headers=["Retry-After", "Idempotent-Replayed"],
+        # Browsers cache a preflight per URL; each stream URL carries a new stream_token, so
+        # stream reconnects still pay one preflight. Other calls reuse it for 10 minutes.
+        max_age=600,
     )
     register_error_handlers(app)
     app.add_exception_handler(Replay, handle_replay)  # type: ignore[arg-type]
