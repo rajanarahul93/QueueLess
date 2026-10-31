@@ -14,6 +14,20 @@ const booking = (): Booking => JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).b
 
 async function noAxeViolations(page: Page, screen: string) {
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  // TEMPORARY diagnostics for the Firefox document-title failure; removed with the fix.
+  if (results.violations.some((violation) => violation.id === "document-title")) {
+    const head = await page.evaluate(() => ({
+      title: document.title,
+      titleElements: [...document.querySelectorAll("title")].map((element) => element.outerHTML),
+      readyState: document.readyState,
+      href: location.href,
+      head: [...document.head.children].map(
+        (element) => `${element.tagName.toLowerCase()}${element.getAttribute("name") ? `[name=${element.getAttribute("name")}]` : ""}`,
+      ),
+    }));
+    console.log(`DIAG ${screen} ${JSON.stringify(head)}`);
+    test.info().annotations.push({ type: "document-title", description: JSON.stringify(head) });
+  }
   expect(results.violations.map((violation) => `${screen}: ${violation.id}`)).toEqual([]);
 }
 
