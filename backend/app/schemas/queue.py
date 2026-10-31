@@ -1,5 +1,6 @@
 import uuid
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -51,3 +52,38 @@ class SnapshotCounts(BaseModel):
 class SnapshotOut(QueueOut):
     counts: SnapshotCounts
     tokens: list[SnapshotToken]  # active tokens only, in the base order
+
+
+class JoinIn(BaseModel):
+    """A walk-in join has no fields; anything sent is rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class QueueStatusIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["open", "paused", "closed"]
+
+
+class TokenOut(BaseModel):
+    """The customer's own token. Times are ISO 8601 with the business-local offset."""
+
+    id: uuid.UUID
+    queue_id: uuid.UUID
+    token_no: int
+    status: str
+    priority: int
+    source: str
+    queued_at: str
+    joined_at: str
+    version: int
+    # Waiting tokens ahead of this one in the base order; null once called or in service.
+    # The estimated wait arrives later and is a separate calculation.
+    ahead_count: int | None
+
+
+class ActiveTokenOut(TokenOut):
+    business_id: uuid.UUID
+    queue_date: date
+    queue_status: str

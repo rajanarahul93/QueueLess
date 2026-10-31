@@ -23,7 +23,7 @@ Status = Literal[
 ]
 
 
-def _visible_to(user_id: uuid.UUID) -> ColumnElement[bool]:
+def visible_to(user_id: uuid.UUID) -> ColumnElement[bool]:
     """The customer who owns it, or an owner or staff member of its business (FR-27)."""
     member = exists().where(
         BusinessMember.business_id == Appointment.business_id, BusinessMember.user_id == user_id
@@ -43,7 +43,7 @@ async def cancel_appointment(
                 Appointment.id == appointment_id,
                 Appointment.status == "booked",
                 func.lower(Appointment.during) > now,
-                _visible_to(actor_id),
+                visible_to(actor_id),
             )
             .values(status="cancelled")
             .returning(Appointment.business_id, Appointment.customer_id)
@@ -63,7 +63,7 @@ async def cancel_appointment(
         await session.commit()
         return
     status = await session.scalar(
-        select(Appointment.status).where(Appointment.id == appointment_id, _visible_to(actor_id))
+        select(Appointment.status).where(Appointment.id == appointment_id, visible_to(actor_id))
     )
     if status is None:
         raise NotFound("Appointment not found")
