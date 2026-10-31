@@ -61,6 +61,8 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         # EventSource sends Last-Event-ID on reconnect; the web app and API are different origins.
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "Last-Event-ID"],
+        # Without these the browser hides them from the web app (OTP countdown, replay notice).
+        expose_headers=["Retry-After", "Idempotent-Replayed"],
     )
     register_error_handlers(app)
     app.add_exception_handler(Replay, handle_replay)  # type: ignore[arg-type]
