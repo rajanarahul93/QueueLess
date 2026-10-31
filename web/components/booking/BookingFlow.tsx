@@ -17,10 +17,10 @@ import { useCountdown } from "@/lib/useCountdown";
 
 type Body = { service_id: string; resource_id: string; start: string };
 
-/** POST /v1/appointments with this action's key. A duplicate still in progress (the same key
- *  racing itself) is retried once, with the same key, after Retry-After. */
-export async function book(body: Body, key: string): Promise<Appointment> {
-  const send = () => api<Appointment>("/v1/appointments", { method: "POST", body, idempotencyKey: key });
+/** Sends with this action's key. A duplicate still in progress (the same key racing itself) is
+ *  retried once, with the same key, after Retry-After. */
+async function sendOnce(path: string, method: "POST" | "PATCH", body: object, key: string): Promise<Appointment> {
+  const send = () => api<Appointment>(path, { method, body, idempotencyKey: key });
   try {
     return await send();
   } catch (error) {
@@ -32,13 +32,20 @@ export async function book(body: Body, key: string): Promise<Appointment> {
   }
 }
 
+export const book = (body: Body, key: string) => sendOnce("/v1/appointments", "POST", body, key);
+
+/** Moves an appointment; the API returns the new one and marks the old one rescheduled. */
+export const move = (id: string, start: string, key: string) =>
+  sendOnce(`/v1/appointments/${id}/reschedule`, "PATCH", { start }, key);
+
 function validDate(value: string | null, today: string): string {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) && value >= today && value <= addDays(today, MAX_DAYS_AHEAD)
     ? value
     : today;
 }
 
-export function BookingFlow({ businessId }: { businessId: string }) {
+/** Books a slot, or with `reschedule` moves that appointment: same service, same screens. */
+export function BookingFlow({ businessId, reschedule }: { businessId: string; reschedule?: Appointment }) {
   const router = useRouter();
   const params = useSearchParams();
   const queryClient = useQueryClient();
@@ -46,8 +53,9 @@ export function BookingFlow({ businessId }: { businessId: string }) {
   const services = useServices(businessId);
   const zone = business.data?.timezone;
   const today = zone ? localToday(zone) : null;
-  const serviceId = params.get("service") ?? services.data?.[0]?.id ?? null;
-  const date = today ? validDate(params.get("date"), today) : null;
+  const serviceId = reschedule?.service_id ?? params.get("service") ?? services.data?.[0]?.id ?? null;
+  const current = reschedule && zone ? localToday(zone, new Date(reschedule.start)) : null; // its day
+  const date = today ? validDate(params.get("date") ?? current, today) : null;
   const service = services.data?.find((item) => item.id === serviceId);
 
   const availability = useQuery({
@@ -78,11 +86,13 @@ export function BookingFlow({ businessId }: { businessId: string }) {
   }, [booked]);
 
   function go(next: { service?: string; date?: string }) {
-    const query = new URLSearchParams({ service: next.service ?? serviceId ?? "", date: next.date ?? date ?? "" });
+    const day = next.date ?? date ?? "";
+    const query = new URLSearchParams(reschedule ? { date: day } : { service: next.service ?? serviceId ?? "", date: day });
     setSelected(null);
     setTaken(null);
     setError(null);
-    router.replace(`/b/${businessId}/book?${query}`, { scroll: false });
+    const path = reschedule ? `/me/reschedule/${reschedule.id}` : `/b/${businessId}/book`;
+    router.replace(`${path}?${query}`, { scroll: false });
   }
 
   function choose(slot: Slot) {
@@ -100,7 +110,9 @@ export function BookingFlow({ businessId }: { businessId: string }) {
     }
     const body = { service_id: serviceId, resource_id: selected.resource_id, start: selected.start };
     try {
-      const appointment = await book(body, action.current.key);
+      const appointment = reschedule
+        ? await move(reschedule.id, selected.start, action.current.key)
+        : await book(body, action.current.key);
       action.current = null;
       setBooked(appointment);
       void queryClient.invalidateQueries({ queryKey: ["availability", businessId] });
@@ -130,19 +142,27 @@ export function BookingFlow({ businessId }: { businessId: string }) {
     return (
       <div role="status">
         <h1 ref={doneHeading} tabIndex={-1} className="text-h1 font-semibold">
-          You&apos;re booked
+          {reschedule ? "Moved" : "You're booked"}
         </h1>
         <p className="mt-2 text-body-lg">
           {booked.service_name} on {dayLabel(booked.start.slice(0, 10), "long")} at {timeLabel(booked.start, zone)}
         </p>
         <p className="text-caption text-muted">Time local to {business.data.name} ({zone}).</p>
         <div className="mt-6 flex flex-col gap-3">
-          <Button variant="outline" onClick={() => { setBooked(null); go({}); }}>
-            Book another time
-          </Button>
-          <Link href={`/b/${businessId}`} className="min-h-11 py-3 text-center text-label text-primary underline">
-            Back to {business.data.name}
-          </Link>
+          {reschedule ? (
+            <Link href="/me" className="min-h-11 py-3 text-center text-label text-primary underline">
+              Back to my appointments
+            </Link>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => { setBooked(null); go({}); }}>
+                Book another time
+              </Button>
+              <Link href={`/b/${businessId}`} className="min-h-11 py-3 text-center text-label text-primary underline">
+                Back to {business.data.name}
+              </Link>
+            </>
+          )}
         </div>
       </div>
     );
@@ -151,8 +171,15 @@ export function BookingFlow({ businessId }: { businessId: string }) {
   const slots = availability.data?.slots ?? [];
   return (
     <>
-      <h1 className="text-h1 font-semibold">Book at {business.data.name}</h1>
-      {services.data.length > 1 && (
+      <h1 className="text-h1 font-semibold">
+        {reschedule ? `Move appointment at ${business.data.name}` : `Book at ${business.data.name}`}
+      </h1>
+      {reschedule && current && (
+        <p className="mt-1 text-body text-muted">
+          Now: {reschedule.service_name} on {dayLabel(current, "long")} at {timeLabel(reschedule.start, zone)}
+        </p>
+      )}
+      {!reschedule && services.data.length > 1 && (
         <div className="mt-4">
           <label htmlFor="service" className="block text-label font-medium">
             Service
@@ -176,7 +203,9 @@ export function BookingFlow({ businessId }: { businessId: string }) {
           {taken && (
             <div ref={takenAlert} tabIndex={-1} role="alert"
               className="mt-6 rounded-md border border-waiting bg-waiting-bg p-4 text-waiting">
-              <p className="text-body font-medium">That time was just taken. Pick another.</p>
+              <p className="text-body font-medium">
+                That time was just taken. Pick another.{reschedule && " Your current appointment hasn't changed."}
+              </p>
               {taken.length > 0 ? (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {taken.slice(0, 3).map((slot) => (
@@ -218,7 +247,7 @@ export function BookingFlow({ businessId }: { businessId: string }) {
           </p>
 
           {selected && (
-            <section aria-label="Confirm booking" className="mt-6 rounded-lg border border-border bg-surface p-4 shadow-2">
+            <section aria-label={reschedule ? "Confirm new time" : "Confirm booking"} className="mt-6 rounded-lg border border-border bg-surface p-4 shadow-2">
               <h2 className="text-h2 font-semibold">Confirm</h2>
               <p className="mt-1 text-body">
                 {service.name}, {dayLabel(date, "long")} at {timeLabel(selected.start, zone)} ({zone})
@@ -226,7 +255,7 @@ export function BookingFlow({ businessId }: { businessId: string }) {
               {error && <Alert>{error}</Alert>}
               <Button type="button" onClick={() => void confirm()} loading={busy} disabled={wait > 0}
                 className="mt-4 w-full">
-                {wait > 0 ? `Confirm booking (wait ${wait} s)` : "Confirm booking"}
+                {`${reschedule ? "Move appointment" : "Confirm booking"}${wait > 0 ? ` (wait ${wait} s)` : ""}`}
               </Button>
             </section>
           )}

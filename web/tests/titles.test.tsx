@@ -35,12 +35,32 @@ describe("page titles", () => {
   });
 
   // A metadata title is unmounted and remounted on every client navigation (the tab is briefly
-  // untitled), so each page renders its own <title>, outside any sign-in guard.
-  it("every page renders its own title", () => {
-    const pages = globSync("app/**/page.tsx");
-    expect(pages.length).toBeGreaterThanOrEqual(11);
-    const untitled = pages.filter((page) => !/<title>|<BusinessTitle /.test(readFileSync(page, "utf8")));
-    expect(untitled).toEqual([]);
+  // untitled), so each page renders its own <title>, outside any sign-in guard. A new page
+  // fails here until it is added with its title.
+  const TITLES: Record<string, string> = {
+    "app/page.tsx": "<title>Home · QueueLess</title>",
+    "app/b/page.tsx": "<title>Find a business · QueueLess</title>",
+    "app/b/[id]/page.tsx": "<BusinessTitle id={id} />",
+    "app/b/[id]/book/page.tsx": "<BusinessTitle id={id} booking />",
+    "app/no-access/page.tsx": "<title>No access · QueueLess</title>",
+    "app/(auth)/login/page.tsx": "<title>Sign in with your phone · QueueLess</title>",
+    "app/(auth)/signin/page.tsx": "<title>Staff and owner sign in · QueueLess</title>",
+    "app/(auth)/register/page.tsx": "<title>Create an owner account · QueueLess</title>",
+    "app/(customer)/me/page.tsx": "<title>My appointments · QueueLess</title>",
+    "app/(customer)/me/reschedule/[id]/page.tsx": "<RescheduleTitle id={id} />",
+    "app/(customer)/ticket/page.tsx": "<title>Your ticket · QueueLess</title>",
+    "app/(owner)/owner/page.tsx": "<title>Your business · QueueLess</title>",
+    "app/(staff)/console/page.tsx": "<title>Queue console · QueueLess</title>",
+  };
+
+  it("every page renders its own title, outside the sign-in guard", () => {
+    expect(globSync("app/**/page.tsx").sort()).toEqual(Object.keys(TITLES).sort());
+    for (const [page, title] of Object.entries(TITLES)) {
+      const source = readFileSync(page, "utf8");
+      expect(source, page).toContain(title);
+      const guard = source.indexOf("<RequireRole");
+      if (guard >= 0) expect(source.indexOf(title), page).toBeLessThan(guard);
+    }
     const layouts = globSync("app/**/layout.tsx").filter((layout) => /title|metadata/.test(readFileSync(layout, "utf8")));
     expect(layouts).toEqual([]);
   });

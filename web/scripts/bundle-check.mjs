@@ -4,7 +4,7 @@ export const DRIFT_KB = 2; // any route moving more than this needs a reviewed b
 
 /** Public and customer pages: the ones a customer's phone loads. */
 export function isCustomerRoute(route) {
-  return route === "/" || ["/login", "/me", "/b"].some((p) => route === p || route.startsWith(`${p}/`));
+  return route === "/" || ["/login", "/me", "/b", "/ticket"].some((p) => route === p || route.startsWith(`${p}/`));
 }
 
 /** sizes and baseline map route -> KB. Returns printable lines and the failures. */
