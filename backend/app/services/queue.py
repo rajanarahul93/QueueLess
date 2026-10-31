@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -17,6 +17,7 @@ from sqlalchemy import (
     func,
     or_,
     select,
+    text,
     tuple_,
     update,
 )
@@ -71,6 +72,55 @@ ACTIVE_TOKEN_STATUSES = ("waiting", "called", "in_service")
 # the final tiebreak: gap-free and assigned in join order under the queue lock.
 def base_order() -> tuple[UnaryExpression[Any], ...]:  # Any: the terms have mixed column types
     return (QueueToken.priority.desc(), QueueToken.queued_at.asc(), QueueToken.token_no.asc())
+
+
+def walk_in_turn(history: Sequence[str], walk_ins: int, appointments: int) -> bool:
+    """D22, generalised to a:b. `history` holds the sources of the most recent calls, newest
+    first. After `appointments` consecutive appointment calls, up to `walk_ins` walk-ins are
+    served in a row. The caller also requires a waiting walk-in and no waiting priority-2 token."""
+    served = 0
+    while served < len(history) and history[served] == "walk_in":
+        served += 1
+    if served >= walk_ins:
+        return False
+    before = history[served : served + appointments]
+    return len(before) == appointments and all(source == "appointment" for source in before)
+
+
+def call_order(
+    waiting: Sequence[QueueToken], history: Sequence[str], walk_ins: int, appointments: int
+) -> list[QueueToken]:
+    """The order call-next would follow, simulated with walk_in_turn() over waiting tokens given
+    in base_order(). Later priority changes or promotions can still reorder it."""
+    remaining, recent, ordered = list(waiting), list(history), []
+    while remaining:
+        pick = remaining[0]
+        if walk_in_turn(recent, walk_ins, appointments) and not any(
+            token.priority == 2 for token in remaining
+        ):
+            walk = [token for token in remaining if token.source == "walk_in"]
+            if walk:
+                pick = min(walk, key=lambda token: (token.queued_at, token.token_no))
+        remaining.remove(pick)
+        ordered.append(pick)
+        recent.insert(0, pick.source)
+    return ordered
+
+
+def history_query(queue_id: uuid.UUID, size: int) -> Select[str, datetime | None]:
+    """Source and called_at of the most recent calls in a queue, newest first. A skip clears
+    called_at, so a skipped token drops out until it is called again."""
+    return (
+        select(QueueToken.source, QueueToken.called_at)
+        .where(QueueToken.queue_id == queue_id, QueueToken.called_at.is_not(None))
+        .order_by(QueueToken.called_at.desc(), QueueToken.token_no.desc())
+        .limit(size)
+    )
+
+
+def ratio(settings: Mapping[str, Any]) -> tuple[int, int]:  # Any: jsonb values
+    value = settings["walk_in_ratio"]
+    return int(value["walk_ins"]), int(value["appointments"])
 
 
 def ahead_of(other: Any, mine: Any) -> ColumnElement[bool]:  # Any: QueueToken or an alias of it
@@ -152,6 +202,7 @@ class MemberQueue:
     queue: Queue
     zone: ZoneInfo
     counts: SnapshotCounts
+    walk_in_ratio: tuple[int, int]
 
 
 async def find_member_queue(
@@ -169,6 +220,7 @@ async def find_member_queue(
             select(
                 Queue,
                 Business.timezone,
+                Business.settings,
                 _count("completed").label("completed"),
                 _count("no_show").label("no_show"),
                 _count("cancelled").label("cancelled"),
@@ -180,7 +232,7 @@ async def find_member_queue(
     if row is None:
         raise NotFound("Queue not found")
     counts = SnapshotCounts(completed=row.completed, no_show=row.no_show, cancelled=row.cancelled)
-    return MemberQueue(row.Queue, get_zone(row.timezone), counts)
+    return MemberQueue(row.Queue, get_zone(row.timezone), counts, ratio(row.settings))
 
 
 def active_tokens_query(queue_id: uuid.UUID) -> Select[QueueToken, str]:
@@ -230,13 +282,16 @@ def _staff_token(
 async def get_snapshot(session: AsyncSession, found: MemberQueue) -> SnapshotOut:
     """One statement: the active tokens in the base order, joined to their customers."""
     zone, queue = found.zone, found.queue
-    tokens = await session.execute(active_tokens_query(queue.id))
-    items: list[SnapshotToken] = []
-    waiting = 0
-    for token, name in tokens.all():
-        waiting += token.status == "waiting"
-        position = waiting if token.status == "waiting" else None
-        items.append(_staff_token(token, name, zone, position))
+    rows = (await session.execute(active_tokens_query(queue.id))).all()
+    walk_ins, appointments = found.walk_in_ratio
+    recent = (await session.execute(history_query(queue.id, walk_ins + appointments))).all()
+    history = [source for source, _ in recent]
+    waiting = [token for token, _ in rows if token.status == "waiting"]
+    order = {
+        token.id: place
+        for place, token in enumerate(call_order(waiting, history, walk_ins, appointments), 1)
+    }
+    items = [_staff_token(token, name, zone, order.get(token.id)) for token, name in rows]
     return SnapshotOut(
         id=queue.id,
         business_id=queue.business_id,
@@ -603,11 +658,20 @@ async def call_next(
     business = await get_business(session, queue.business_id)
     if queue.queue_date != now.astimezone(get_zone(business.timezone)).date():
         raise QueueClosed("This is not today's queue")
-    token = await session.scalar(
-        next_waiting_query(queue_id).execution_options(populate_existing=True)
+    # why raw SQL: SQLAlchemy has no construct for advisory locks. The lock makes the ratio
+    # decision and the pick one-at-a-time per queue (two calls cannot both decide it is a
+    # walk-in's turn); joins, status changes and other queues never take it. It is held until
+    # commit. Lock order: this lock, then the token row (SKIP LOCKED); nothing takes them reversed.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"), {"key": queue_lock_key(queue_id)}
     )
+    token, last_called = await _pick(session, queue_id, ratio(business.settings))
     if token is None:
         return None
+    # Calls in a queue must be ordered as they were made, for the ratio history: `now` was
+    # taken before waiting for the lock, so nudge it past the latest call if needed.
+    if last_called is not None and now <= last_called:
+        now = last_called + timedelta(microseconds=1)
     change = transition(token.status, "call", skip_count=token.skip_count, now=now)
     await session.execute(
         update(QueueToken)
@@ -619,11 +683,60 @@ async def call_next(
     return await staff_token(session, token.id)
 
 
+def queue_lock_key(queue_id: uuid.UUID) -> int:
+    """A signed 64-bit key from the queue id's first 8 bytes. Queue ids are random UUIDs, so two
+    queues sharing a key is vanishingly rare, and would only make their calls wait, never
+    corrupt anything. No other advisory lock exists in the app."""
+    return int.from_bytes(queue_id.bytes[:8], "big", signed=True)
+
+
+async def _pick(
+    session: AsyncSession, queue_id: uuid.UUID, walk_in_ratio: tuple[int, int]
+) -> tuple[QueueToken | None, datetime | None]:
+    """The next token: the oldest waiting walk-in when it is a walk-in's turn (D22) and no
+    priority-2 token waits; otherwise the base order. Also returns the latest call time. Run
+    under the per-queue advisory lock."""
+    walk_ins, appointments = walk_in_ratio
+    recent = (await session.execute(history_query(queue_id, walk_ins + appointments))).all()
+    history = [source for source, _ in recent]
+    last_called = recent[0][1] if recent else None
+    if walk_in_turn(history, walk_ins, appointments):
+        urgent = await session.scalar(
+            select(QueueToken.id)
+            .where(
+                QueueToken.queue_id == queue_id,
+                QueueToken.status == "waiting",
+                QueueToken.priority == 2,
+            )
+            .limit(1)
+        )
+        if urgent is None:
+            walk_in = await session.scalar(
+                select(QueueToken)
+                .where(
+                    QueueToken.queue_id == queue_id,
+                    QueueToken.status == "waiting",
+                    QueueToken.source == "walk_in",
+                )
+                .order_by(QueueToken.queued_at, QueueToken.token_no)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            )
+            if walk_in is not None:
+                return walk_in, last_called
+    token = await session.scalar(
+        next_waiting_query(queue_id).execution_options(populate_existing=True)
+    )
+    return token, last_called
+
+
 def _audit(
     session: AsyncSession,
     token: QueueToken,
-    actor_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
     action: str,
+    at: datetime | None = None,
     **data: object,
 ) -> None:
     record_audit(
@@ -634,6 +747,7 @@ def _audit(
         entity_type="queue_token",
         entity_id=token.id,
         data={"token_no": token.token_no, **data},
+        created_at=at,
     )
 
 
@@ -704,9 +818,27 @@ async def act_on_token(
     now: datetime,
     service_id: uuid.UUID | None = None,
 ) -> SnapshotToken:
-    """start, complete, skip or mark_no_show. Order: version, then state, then locks in the
-    global order (customer row only when the outcome is a no-show, then the appointment), then
-    the conditional token UPDATE, then the side effects and the audit row, in one transaction."""
+    """A staff action (start, complete, skip, mark_no_show), returned in the staff shape."""
+    await apply_event(session, token_id, actor_id, event, version, now, service_id)
+    return await staff_token(session, token_id)
+
+
+async def apply_event(
+    session: AsyncSession,
+    token_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    event: Event,
+    version: int,
+    now: datetime,
+    service_id: uuid.UUID | None = None,
+    *,
+    action: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """The one path for staff actions and worker jobs (actor None = the system). Order:
+    version, then state, then locks in the global order (customer row only when the outcome is
+    a no-show, then the appointment), then the conditional token UPDATE, then the side effects
+    and the audit row, in one transaction."""
     token = await _read_for_change(session, token_id, version)
     change = transition(token.status, event, skip_count=token.skip_count, now=now)
     session_service = await _start_service(session, token, service_id) if event == "start" else None
@@ -720,12 +852,18 @@ async def act_on_token(
         )
     await _apply(session, token, change.values)
     await _side_effects(session, token, change.status, now, session_service)
-    _audit(session, token, actor_id, f"token.{event}", status=change.status)
+    extra = {"reason": reason} if reason else {}
+    at = now if actor_id is None else None  # job rows carry the job's clock
+    _audit(session, token, actor_id, action or f"token.{event}", at, status=change.status, **extra)
     await session.commit()
-    return await staff_token(session, token.id)
 
 
-APPOINTMENT_STATUS = {"in_service": "in_service", "completed": "completed", "no_show": "no_show"}
+APPOINTMENT_STATUS = {
+    "in_service": "in_service",
+    "completed": "completed",
+    "no_show": "no_show",
+    "cancelled": "cancelled",
+}
 
 
 async def _side_effects(

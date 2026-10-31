@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,11 +11,12 @@ def record_audit(
     session: AsyncSession,
     *,
     business_id: uuid.UUID,
-    actor_id: uuid.UUID,
+    actor_id: uuid.UUID | None,  # None only for worker jobs (the system)
     action: str,
     entity_type: str,
     entity_id: uuid.UUID,
     data: dict[str, Any] | None = None,
+    created_at: datetime | None = None,
 ) -> None:
     """Adds the row to the caller's transaction (FR-28); it never commits, so the audit row and
     the action it describes succeed or fail together."""
@@ -26,5 +28,6 @@ def record_audit(
             entity_type=entity_type,
             entity_id=entity_id,
             data=data or {},
+            **({"created_at": created_at} if created_at else {}),
         )
     )

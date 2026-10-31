@@ -29,7 +29,8 @@ class AuditLog(Base):
     # business_id has no FK: audit rows outlive the entities they describe.
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     business_id: Mapped[uuid.UUID]
-    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    # NULL means the system (a worker job); every request writes the acting user.
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     action: Mapped[str]
     entity_type: Mapped[str]
     entity_id: Mapped[uuid.UUID | None]

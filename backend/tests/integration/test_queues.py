@@ -144,6 +144,7 @@ async def add_token(
     **values: object,
 ) -> str:
     customer_id = values.pop("customer_id", None)
+    source = values.pop("source", "walk_in")
     person = await api.create_user(
         "customer",
         name=f"Customer {token_no}",
@@ -158,7 +159,7 @@ async def add_token(
                 business_id=w.business_id,
                 queue_id=uuid.UUID(queue),
                 token_no=token_no,
-                source="walk_in",
+                source=source,
                 customer_id=customer_id or person.id,
                 status=status,
                 priority=priority,
@@ -253,7 +254,7 @@ async def test_snapshot_creates_nothing(api: Api) -> None:
     assert await queue_rows(api, w.business_id) == 0
 
 
-async def test_snapshot_uses_three_statements_whatever_the_token_count(api: Api) -> None:
+async def test_snapshot_uses_four_statements_whatever_the_token_count(api: Api) -> None:
     w = await world(api)
     queue = await queue_id(w)
     engine = api.app.state.engine.sync_engine
@@ -273,4 +274,5 @@ async def test_snapshot_uses_three_statements_whatever_the_token_count(api: Api)
         finally:
             event.remove(engine, "before_cursor_execute", record)
         counts.append(len(statements))
-    assert counts == [3, 3]  # role check, queue+membership+counts, active tokens with customers
+    # role check, queue+membership+counts, active tokens with customers, recent call history
+    assert counts == [4, 4]
