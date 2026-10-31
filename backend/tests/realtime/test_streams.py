@@ -20,11 +20,13 @@ from app.models import BusinessMember, OutboxEvent
 from app.realtime import hub as hub_module
 from app.realtime import sse
 from app.realtime.hub import Hub
+from app.services import queue_jobs
 from tests.integration.api import Api
-from tests.integration.test_booking import World, customer, world
+from tests.integration.test_booking import World, book_one, customer, world
+from tests.integration.test_businesses import new_service
 from tests.integration.test_queues import queue_id
-from tests.integration.test_serving import call_next, priority
-from tests.integration.test_tokens import join
+from tests.integration.test_serving import act, call_next, priority
+from tests.integration.test_tokens import check_in, join
 from tests.realtime.conftest import Stream, open_stream, relay, serve
 
 pytestmark = pytest.mark.anyio
@@ -172,6 +174,7 @@ async def test_customer_stream_sends_only_their_own_changes(api: Api) -> None:
         url = f"/v1/tokens/{me['id']}/stream?stream_token={me['stream_token']}"
         async with open_stream(http, url) as s:
             snap = await s.expect("snapshot")
+            assert set(snap["data"].pop("eta")) == {"min_minutes", "max_minutes"}
             assert snap["data"] == {
                 "token_id": me["id"],
                 "token_no": me["token_no"],
@@ -193,6 +196,68 @@ async def test_customer_stream_sends_only_their_own_changes(api: Api) -> None:
             for kind in ("priority", "name", "phone", "email", ahead["id"]):
                 assert kind not in s.raw, kind
     del me_headers
+
+
+async def test_an_eta_change_alone_is_sent(api: Api) -> None:
+    """Change detection includes the rounded ETA: here only the ETA moves."""
+    w, queue = await setup(api)
+    long_service = await new_service(api, w.business_id, w.owner, duration_min=60)
+    _, ahead = await joined(api, queue)
+    _, me = await joined(api, queue)
+    async with (
+        relay(api),
+        serve(api) as (base, _),
+        httpx.AsyncClient(base_url=base, timeout=30) as http,
+    ):
+        url = f"/v1/tokens/{me['id']}/stream?stream_token={me['stream_token']}"
+        async with open_stream(http, url) as s:
+            # a walk-in without a service: mean of 30 and 60 min = 2700 s -/+ 540 s
+            # -> 2160 to 3240 s = 36 to 54 min -> 35 to 55
+            snap = await s.expect("snapshot")
+            assert snap["data"]["eta"] == {"min_minutes": 35, "max_minutes": 55}
+            called = (await call_next(api, w.owner, queue)).json()
+            assert called["id"] == ahead["id"]
+            moved = await s.expect("token.updated")
+            assert (moved["data"]["ahead_count"], moved["data"]["eta"]) == (
+                0,
+                {"min_minutes": 35, "max_minutes": 55},
+            )
+            started = await act(
+                api, w.owner, called["id"], "start", called["version"], service_id=long_service
+            )
+            assert started.status_code == 200, started.text
+            # in service with the 60-minute service, just started: 3600 s left, no spread
+            # -> 60 to 62; status, ahead_count and next are unchanged
+            update = await s.expect("token.updated")
+            assert update["data"] == moved["data"] | {"eta": {"min_minutes": 60, "max_minutes": 62}}
+
+
+async def test_the_customer_is_told_when_running_late(api: Api) -> None:
+    w = await world(api)
+    _, headers = await customer(api)
+    appointment_id = await book_one(w, headers)  # Monday 09:00 Kolkata
+    now = datetime.fromisoformat("2026-11-02T08:45:00+05:30")
+    api.clock.now = now.timestamp()
+    queue = await queue_id(w)
+    for _ in range(2):
+        await joined(api, queue)
+    token = (await check_in(api, headers, appointment_id)).json()
+    detail = (await api.client.get(f"/v1/tokens/{token['id']}", headers=headers)).json()
+    async with (
+        relay(api),
+        serve(api) as (base, _),
+        httpx.AsyncClient(base_url=base, timeout=30) as http,
+    ):
+        url = f"/v1/tokens/{token['id']}/stream?stream_token={detail['stream_token']}"
+        async with open_stream(http, url) as s:
+            await s.expect("snapshot")
+            await queue_jobs.running_late(api.sessions, now)
+            # two 1800 s walk-ins ahead: projected 09:45, 45 minutes past the slot
+            notice = await s.expect("token.running_late")
+            assert notice["data"] == {
+                "delay_min": 45,
+                "eta": {"min_minutes": 50, "max_minutes": 70},
+            }
 
 
 # --- board ---
@@ -429,6 +494,7 @@ async def test_get_token_with_stream_token(api: Api) -> None:
         "joined_at",
         "version",
         "ahead_count",
+        "eta",
         "stream_token",
         "expires_in",
     }

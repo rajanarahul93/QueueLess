@@ -13,7 +13,7 @@ from redis.asyncio import Redis
 from app.core.config import Settings
 from app.db.session import create_engine, create_session_factory
 from app.realtime.relay import run_relay
-from app.services import queue_jobs, retention
+from app.services import queue_jobs, retention, rollups
 
 JOB_TIMEOUT_SEC = 50  # shorter than the one-minute schedule
 WORKER_POOL_SIZE = 5
@@ -65,6 +65,16 @@ async def end_of_day(ctx: dict[str, Any]) -> dict[str, int]:
     return vars(summary)
 
 
+async def check_running_late(ctx: dict[str, Any]) -> dict[str, int]:
+    summary = await queue_jobs.running_late(ctx["sessions"], _now(ctx))
+    return vars(summary)
+
+
+async def rollup_daily(ctx: dict[str, Any]) -> dict[str, int]:
+    summary = await rollups.rollup(ctx["sessions"], _now(ctx))
+    return vars(summary)
+
+
 async def clean_retention(ctx: dict[str, Any]) -> dict[str, int]:
     summary = await retention.clean(ctx["sessions"], _now(ctx))
     return vars(summary)
@@ -80,6 +90,15 @@ class WorkerSettings:
         _every_minute(sweep_no_shows),
         _every_minute(promote_waiting),
         _every_minute(end_of_day),
+        _every_minute(check_running_late),
+        cron(
+            rollup_daily,
+            minute={5},
+            second=0,
+            timeout=JOB_TIMEOUT_SEC,
+            max_tries=1,
+            unique=True,
+        ),
         cron(
             clean_retention,
             minute=set(range(0, 60, 10)),

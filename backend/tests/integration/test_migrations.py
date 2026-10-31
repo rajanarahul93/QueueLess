@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from alembic import command
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -87,3 +88,34 @@ def test_models_and_migrations_agree(migrated_url: str) -> None:
 def test_no_double_prefixed_check_names(migrated_url: str) -> None:
     for table, name, _ in asyncio.run(query(migrated_url, CONSTRAINTS_SQL)):
         assert not name.startswith(f"ck_{table}_ck_"), name
+
+
+def test_0006_downgrade_refuses_rows_the_old_key_cannot_hold(postgres_url: str) -> None:
+    reset_schema(postgres_url)
+    config = alembic_config(postgres_url)
+    command.upgrade(config, "head")
+    seed = """
+    WITH owner AS (
+        INSERT INTO users (name, email, role) VALUES ('o', 'o@example.com', 'owner') RETURNING id
+    ), business AS (
+        INSERT INTO businesses (owner_id, name, category, timezone, open_hours, settings)
+        SELECT id, 'b', 'c', 'Asia/Kolkata', '{}', '{}' FROM owner RETURNING id
+    )
+    INSERT INTO daily_stats (business_id, service_id, stat_date, hour)
+    SELECT id, NULL, DATE '2026-11-01', NULL FROM business
+    """
+    asyncio.run(execute(postgres_url, seed))
+    rows_sql = "SELECT stat_date::text FROM daily_stats"
+    with pytest.raises(Exception, match="refusing to restore the old primary key"):
+        command.downgrade(config, "0005")
+    assert asyncio.run(query(postgres_url, rows_sql)) == [("2026-11-01",)]  # kept
+    asyncio.run(execute(postgres_url, "DELETE FROM daily_stats"))
+    command.downgrade(config, "0005")
+    command.upgrade(config, "head")
+
+
+async def execute(url: str, sql: str) -> None:
+    engine = create_engine(url)
+    async with engine.begin() as connection:
+        await connection.execute(text(sql))
+    await engine.dispose()

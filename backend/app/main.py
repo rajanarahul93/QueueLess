@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
-from app.api.v1 import appointments, auth, businesses, queues, streams, tokens
+from app.api.v1 import appointments, auth, businesses, queues, reports, streams, tokens
 from app.core.config import Settings
 from app.core.errors import register_error_handlers
 from app.core.idempotency import Replay, handle_replay
@@ -70,6 +70,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     app.include_router(queues.router, prefix="/v1")
     app.include_router(tokens.router, prefix="/v1")
     app.include_router(streams.router, prefix="/v1")
+    app.include_router(reports.router, prefix="/v1")
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

@@ -291,6 +291,7 @@ ALLOWED_WITHOUT_EVENT = {
     },
     "queue.py": {"open_today_queue"},
     "retention.py": {"clean"},  # deleting old rows is not a change any client watches
+    "rollups.py": {"rollup"},  # statistics of finished days: no client watches them
 }
 EMITTERS = {"emit_event", "emit_token_event", "emit_queue_status", "apply_event"}
 

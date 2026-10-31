@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     sse_max_conn_per_user: int = Field(default=5, gt=0)
     sse_max_conn_per_instance: int = Field(default=1000, gt=0)
     sse_max_stream_sec: int = Field(default=1800, gt=0)  # hard cap; the client reconnects
+    eta_cache_ttl_sec: int = Field(default=5, gt=0)  # every queue event also changes the key
 
     @field_validator("cors_origins", mode="before")
     @classmethod

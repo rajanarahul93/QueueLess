@@ -66,6 +66,13 @@ class QueueStatusIn(BaseModel):
     status: Literal["open", "paused", "closed"]
 
 
+class EtaOut(BaseModel):
+    """Minutes until the token is served: an estimate, not a guarantee."""
+
+    min_minutes: int
+    max_minutes: int
+
+
 class TokenOut(BaseModel):
     """The customer's own token. Times are ISO 8601 with the business-local offset. Priority is
     a staff matter and stays out of customer responses."""
@@ -78,9 +85,9 @@ class TokenOut(BaseModel):
     queued_at: str
     joined_at: str
     version: int
-    # Waiting tokens ahead of this one in the base order; null once called or in service.
-    # The estimated wait arrives later and is a separate calculation.
+    # Waiting tokens call-next will serve before this one; null once called or in service.
     ahead_count: int | None
+    eta: EtaOut | None  # null unless waiting
 
 
 class TokenWithStreamOut(TokenOut):

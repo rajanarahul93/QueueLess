@@ -493,9 +493,12 @@ async def test_each_job_through_the_worker_functions(
         "cron:sweep_no_shows",
         "cron:promote_waiting",
         "cron:end_of_day",
+        "cron:check_running_late",
+        "cron:rollup_daily",
         "cron:clean_retention",
     }
     assert jobs["cron:clean_retention"].minute == set(range(0, 60, 10))
+    assert jobs["cron:rollup_daily"].minute == {5}  # hourly
     for job in jobs.values():
         assert (job.timeout_s, job.max_tries, job.unique) == (50, 1, True)
     w = await world(api)
@@ -512,10 +515,12 @@ async def test_each_job_through_the_worker_functions(
             await worker.sweep_no_shows(ctx),
             await worker.promote_waiting(ctx),
             await worker.end_of_day(ctx),
+            await worker.check_running_late(ctx),
         ]
     finally:
         await worker.shutdown(ctx)
-    assert [r["changed"] for r in results] == [1, 1, 2]  # end of day: the token and its queue
+    # end of day: the token and its queue; running late: no appointment checked in
+    assert [r["changed"] for r in results] == [1, 1, 2, 0]
     assert set(results[0]) == {"processed", "changed", "skipped", "failed", "duration_ms"}
     assert (await token_row(api, swept)).status == "no_show"
     assert (await token_row(api, promoted)).priority == 1

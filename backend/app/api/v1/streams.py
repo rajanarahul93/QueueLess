@@ -109,7 +109,15 @@ async def customer_stream(
     await session.close()
     hub: Hub = request.app.state.hub
     client = hub.admit(str(claims.subject_id))
-    view = customer_view(request.app.state.session_factory, hub, queue_id, token_id)
+    view = customer_view(
+        request.app.state.session_factory,
+        hub,
+        queue_id,
+        token_id,
+        request.app.state.redis,
+        request.app.state.clock,
+        settings.eta_cache_ttl_sec,
+    )
     return await _open(request, client, view, last_event_id, settings.sse_max_stream_sec)
 
 
