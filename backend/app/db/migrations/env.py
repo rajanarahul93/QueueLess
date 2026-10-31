@@ -27,9 +27,11 @@ def run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     engine = create_async_engine(url)
-    async with engine.connect() as connection:
-        await connection.run_sync(run_migrations)
-    await engine.dispose()
+    try:  # a refused downgrade raises: still close the connection
+        async with engine.connect() as connection:
+            await connection.run_sync(run_migrations)
+    finally:
+        await engine.dispose()
 
 
 asyncio.run(run_async_migrations())

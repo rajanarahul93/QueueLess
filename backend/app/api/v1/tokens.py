@@ -4,12 +4,14 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from redis.asyncio import Redis
 
 from app.core.config import Settings
 from app.core.dependencies import (
     CurrentUser,
     SessionDep,
     get_clock,
+    get_redis,
     get_settings,
     require_customer_account,
     require_staff_or_owner_account,
@@ -32,6 +34,7 @@ from app.services.transitions import Event
 router = APIRouter(prefix="/tokens", tags=["tokens"], route_class=IdempotentRoute)
 
 ClockDep = Annotated[Callable[[], float], Depends(get_clock)]
+RedisDep = Annotated[Redis, Depends(get_redis)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
@@ -45,19 +48,33 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 async def active_tokens(
     user: CurrentUser,
     session: SessionDep,
+    redis: RedisDep,
+    settings: SettingsDep,
+    clock: ClockDep,
     active: Annotated[str | None, Query()] = None,  # raw, so only the literal "true" passes
 ) -> list[ActiveTokenOut]:
     if active != "true":
         raise ValidationFailed(["query", "active"], "Only active=true is supported")
-    return await queue_service.list_active_tokens(session, user.user_id)
+    now = datetime.fromtimestamp(clock(), UTC)
+    return await queue_service.list_active_tokens(
+        session, user.user_id, redis, now, settings.eta_cache_ttl_sec
+    )
 
 
 @router.get("/{token_id}", dependencies=[Depends(require_customer_account)])  # staff: 403
 async def get_token(
-    token_id: uuid.UUID, user: CurrentUser, session: SessionDep, settings: SettingsDep
+    token_id: uuid.UUID,
+    user: CurrentUser,
+    session: SessionDep,
+    settings: SettingsDep,
+    redis: RedisDep,
+    clock: ClockDep,
 ) -> TokenWithStreamOut:
     """The customer's own token plus a short-lived stream token for its live stream."""
-    token = await queue_service.own_token(session, token_id, user.user_id)
+    now = datetime.fromtimestamp(clock(), UTC)
+    token = await queue_service.own_token(
+        session, token_id, user.user_id, redis, now, settings.eta_cache_ttl_sec
+    )
     return TokenWithStreamOut(
         **token.model_dump(),
         stream_token=create_stream_token(settings, "token", token_id, user.user_id),

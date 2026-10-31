@@ -160,3 +160,9 @@ def test_stream_settings_defaults_and_validation() -> None:
     with pytest.raises(ValidationError, match="at least twice"):
         make_settings(sse_heartbeat_sec=20, sse_max_stream_sec=39)
     assert make_settings(sse_heartbeat_sec=20, sse_max_stream_sec=40).sse_max_stream_sec == 40
+
+
+def test_eta_cache_ttl_is_positive() -> None:
+    assert make_settings().eta_cache_ttl_sec == 5
+    with pytest.raises(ValidationError):
+        make_settings(eta_cache_ttl_sec=0)

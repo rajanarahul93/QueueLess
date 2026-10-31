@@ -1,29 +1,36 @@
+import json
+import logging
 import uuid
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from typing import Any
+from datetime import date, datetime, time, timedelta
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import (
     ColumnElement,
+    DateTime,
     Row,
     ScalarSelect,
     Select,
+    String,
     UnaryExpression,
     and_,
-    case,
+    bindparam,
     exists,
     func,
-    or_,
+    literal,
     select,
-    tuple_,
+    true,
+    union_all,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.core.config import Settings
 from app.core.errors import (
@@ -42,6 +49,7 @@ from app.models import (
     Appointment,
     Business,
     BusinessMember,
+    OutboxEvent,
     Queue,
     QueueToken,
     Resource,
@@ -52,6 +60,7 @@ from app.models import (
 from app.realtime.outbox import emit_event, emit_token_event, lock_queue_events
 from app.schemas.queue import (
     ActiveTokenOut,
+    EtaOut,
     QueueOut,
     SnapshotCounts,
     SnapshotCustomer,
@@ -63,15 +72,45 @@ from app.schemas.queue import (
 from app.services.appointments import visible_to
 from app.services.audit import record_audit
 from app.services.business import get_business
+from app.services.eta import (
+    LAST_SESSIONS,
+    MAX_SESSION_FACTOR,
+    MIN_SESSION_SEC,
+    Duration,
+    Eta,
+    expected,
+    queue_etas,
+    remaining,
+)
 from app.services.transitions import Event, transition
 
 ACTIVE_TOKEN_STATUSES = ("waiting", "called", "in_service")
+
+logger = logging.getLogger(__name__)
 
 
 # The one ordering definition, shared by the snapshot, ahead_count and call-next. token_no is
 # the final tiebreak: gap-free and assigned in join order under the queue lock.
 def base_order() -> tuple[UnaryExpression[Any], ...]:  # Any: the terms have mixed column types
     return (QueueToken.priority.desc(), QueueToken.queued_at.asc(), QueueToken.token_no.asc())
+
+
+class Orderable(Protocol):
+    """What the ordering reads: a stored token, or one being added."""
+
+    @property
+    def priority(self) -> int: ...
+    @property
+    def source(self) -> str: ...
+    @property
+    def queued_at(self) -> datetime: ...
+    @property
+    def token_no(self) -> int: ...
+
+
+def base_key(token: Orderable) -> tuple[int, datetime, int]:
+    """base_order() in Python, for a token that is not in the database yet."""
+    return (-token.priority, token.queued_at, token.token_no)
 
 
 def walk_in_turn(history: Sequence[str], walk_ins: int, appointments: int) -> bool:
@@ -87,12 +126,12 @@ def walk_in_turn(history: Sequence[str], walk_ins: int, appointments: int) -> bo
     return len(before) == appointments and all(source == "appointment" for source in before)
 
 
-def call_order(
-    waiting: Sequence[QueueToken], history: Sequence[str], walk_ins: int, appointments: int
-) -> list[QueueToken]:
+def call_order[T: Orderable](
+    waiting: Sequence[T], history: Sequence[str], walk_ins: int, appointments: int
+) -> list[T]:
     """The order call-next would follow, simulated with walk_in_turn() over waiting tokens given
     in base_order(). Later priority changes or promotions can still reorder it."""
-    remaining, recent, ordered = list(waiting), list(history), []
+    remaining, recent, ordered = list(waiting), list(history), list[T]()
     while remaining:
         pick = remaining[0]
         if walk_in_turn(recent, walk_ins, appointments) and not any(
@@ -103,7 +142,8 @@ def call_order(
                 pick = min(walk, key=lambda token: (token.queued_at, token.token_no))
         remaining.remove(pick)
         ordered.append(pick)
-        recent.insert(0, pick.source)
+        # walk_in_turn() reads only this many recent calls; a longer list costs O(n) a pick
+        recent = [pick.source, *recent][: walk_ins + appointments]
     return ordered
 
 
@@ -121,17 +161,6 @@ def history_query(queue_id: uuid.UUID, size: int) -> Select[str, datetime | None
 def ratio(settings: Mapping[str, Any]) -> tuple[int, int]:  # Any: jsonb values
     value = settings["walk_in_ratio"]
     return int(value["walk_ins"]), int(value["appointments"])
-
-
-def ahead_of(other: Any, mine: Any) -> ColumnElement[bool]:  # Any: QueueToken or an alias of it
-    """`other` comes before `mine` in base_order()."""
-    return or_(
-        other.priority > mine.priority,
-        and_(
-            other.priority == mine.priority,
-            tuple_(other.queued_at, other.token_no) < tuple_(mine.queued_at, mine.token_no),
-        ),
-    )
 
 
 async def default_resource(session: AsyncSession, business_id: uuid.UUID) -> Resource:
@@ -318,32 +347,296 @@ class _DuplicateToken(Exception):
         self.constraint = constraint
 
 
-def _ahead_count() -> ColumnElement[int | None]:
-    """Waiting tokens ahead in base_order(); null when the token itself is not waiting."""
-    other = aliased(QueueToken)
-    ahead = (
-        select(func.count())
-        .where(
-            other.queue_id == QueueToken.queue_id,
-            other.status == "waiting",
-            ahead_of(other, QueueToken),
+# --- positions and ETAs (FR-14, FR-15): one computation per queue, in call order ---
+
+RESOURCES_PER_QUEUE = 1  # a queue belongs to one resource in v1; the ETA divides by this
+SAMPLE_LOOKBACK = timedelta(days=90)  # bounds the hour-band search on a service's sessions
+
+
+@dataclass(frozen=True)
+class Position:
+    token_no: int
+    status: str
+    ahead_count: int | None  # waiting tokens call-next serves first; null unless waiting
+    eta: Eta | None  # null unless waiting
+
+
+@dataclass(frozen=True)
+class Ticket:
+    """An active token as the ETA reads it: plain values, far cheaper than ORM objects when a
+    join reads a long queue."""
+
+    id: uuid.UUID
+    status: str
+    source: str
+    priority: int
+    queued_at: datetime
+    token_no: int
+    started_at: datetime | None
+
+
+@dataclass(frozen=True)
+class QueueData:
+    """What a queue's positions and ETAs are computed from (gather() reads it in 5 queries)."""
+
+    tokens: list[Ticket]  # active, in base_order()
+    durations: dict[uuid.UUID, Duration]  # expected duration of each active token
+    by_service: dict[uuid.UUID, Duration]
+    walk_in: Duration  # a walk-in token that has no service yet
+    remaining_sec: float  # time left on the sessions in progress
+    history: list[str]
+    walk_in_ratio: tuple[int, int]
+
+
+def _samples_query() -> Any:  # Any: a UNION ALL of three LATERAL reads
+    """Per service: its last sessions, its last sessions in this local hour, and today's, as
+    (kind, service_id, duration_sec, ended_at). Each read walks the (service_id, ended_at)
+    index. Implausible sessions never count. Parameters: business_id, zone, hour, day_start,
+    since."""
+
+    def sessions(*conditions: ColumnElement[bool], limit: int | None) -> Any:  # Any: LATERAL
+        return (
+            select(ServiceSession.duration_sec, ServiceSession.ended_at)
+            .where(
+                ServiceSession.service_id == Service.id,
+                ServiceSession.duration_sec.between(
+                    MIN_SESSION_SEC, Service.duration_min * 60 * MAX_SESSION_FACTOR
+                ),
+                *conditions,
+            )
+            .order_by(ServiceSession.ended_at.desc())
+            .limit(limit)
+            .lateral()
         )
-        .correlate(QueueToken)
-        .scalar_subquery()
+
+    local_hour = func.extract(
+        "hour", func.timezone(bindparam("zone", type_=String), ServiceSession.started_at)
     )
-    return case((QueueToken.status == "waiting", ahead), else_=None)
+    since = ServiceSession.ended_at > bindparam("since", type_=DateTime(timezone=True))
+    today = ServiceSession.started_at >= bindparam("day_start", type_=DateTime(timezone=True))
+    reads = {
+        "recent": sessions(limit=LAST_SESSIONS),
+        "band": sessions(local_hour == bindparam("hour"), since, limit=LAST_SESSIONS),
+        "today": sessions(today, limit=None),
+    }
+    return union_all(
+        *(
+            select(literal(kind).label("kind"), Service.id, read.c.duration_sec, read.c.ended_at)
+            .select_from(Service)
+            .join(read, true())
+            .where(Service.business_id == bindparam("business_id"))
+            for kind, read in reads.items()
+        )
+    )
 
 
-def _token_query() -> Select[QueueToken, date, str, str, int | None]:
+SAMPLES = _samples_query()  # built once: a join runs it on every call
+
+
+async def _durations(
+    session: AsyncSession, business_id: uuid.UUID, zone_name: str, now: datetime
+) -> tuple[dict[uuid.UUID, Duration], Duration]:
+    """Expected duration per service, and for a walk-in without a service: the business's
+    last sessions of any service, else the mean configured duration of its active services."""
+    local = now.astimezone(get_zone(zone_name))
+    day_start = datetime.combine(local.date(), time.min, local.tzinfo)
+    services = (
+        await session.execute(
+            select(Service.id, Service.duration_min, Service.is_active).where(
+                Service.business_id == business_id
+            )
+        )
+    ).all()
+    samples: dict[tuple[str, uuid.UUID], list[float]] = defaultdict(list)
+    recent: list[tuple[datetime, float]] = []
+    values = {
+        "business_id": business_id,
+        "zone": zone_name,
+        "hour": local.hour,
+        "day_start": day_start,
+        "since": now - SAMPLE_LOOKBACK,
+    }
+    for kind, service_id, duration_sec, ended_at in (await session.execute(SAMPLES, values)).all():
+        samples[kind, service_id].append(duration_sec)
+        if kind == "recent":
+            recent.append((ended_at, duration_sec))
+    by_service = {
+        row.id: expected(
+            [samples["band", row.id], samples["recent", row.id]],
+            row.duration_min * 60,
+            samples["today", row.id],
+        )
+        for row in services
+    }
+    # The business's last sessions are among each service's last ones, so this is exact.
+    latest = [duration for _, duration in sorted(recent, reverse=True)[:LAST_SESSIONS]]
+    active = [row.duration_min * 60 for row in services if row.is_active]
+    configured = sum(active) / len(active) if active else 0.0
+    today = [value for (kind, _), values in samples.items() if kind == "today" for value in values]
+    return by_service, expected([latest], configured, today)
+
+
+async def gather(session: AsyncSession, queue_id: uuid.UUID, now: datetime) -> QueueData | None:
+    """None for an unknown queue."""
+    found = (
+        await session.execute(
+            select(Queue.business_id, Business.settings, Business.timezone)
+            .join(Business, Business.id == Queue.business_id)
+            .where(Queue.id == queue_id)
+        )
+    ).one_or_none()
+    if found is None:
+        return None
+    rows = (
+        await session.execute(
+            select(
+                QueueToken.id,
+                QueueToken.status,
+                QueueToken.source,
+                QueueToken.priority,
+                QueueToken.queued_at,
+                QueueToken.token_no,
+                QueueToken.started_at,
+                Appointment.service_id,
+                ServiceSession.service_id,
+            )
+            .outerjoin(Appointment, Appointment.id == QueueToken.appointment_id)
+            .outerjoin(
+                ServiceSession,
+                and_(ServiceSession.token_id == QueueToken.id, ServiceSession.ended_at.is_(None)),
+            )
+            .where(QueueToken.queue_id == queue_id, QueueToken.status.in_(ACTIVE_TOKEN_STATUSES))
+            .order_by(*base_order())
+        )
+    ).all()
+    walk_ins, appointments = ratio(found.settings)
+    recent = (await session.execute(history_query(queue_id, walk_ins + appointments))).all()
+    by_service, walk_in = await _durations(session, found.business_id, found.timezone, now)
+    tokens = [Ticket(*row[:7]) for row in rows]
+    durations, left = {}, 0.0
+    for token, (*_, booked_service, session_service) in zip(tokens, rows, strict=True):
+        service_id = session_service or booked_service
+        durations[token.id] = by_service[service_id] if service_id else walk_in
+        if token.status == "in_service" and token.started_at is not None:
+            elapsed = (now - token.started_at).total_seconds()
+            left += remaining(durations[token.id].mean, elapsed)
+    return QueueData(
+        tokens=tokens,
+        durations=durations,
+        by_service=by_service,
+        walk_in=walk_in,
+        remaining_sec=left,
+        history=[source for source, _ in recent],
+        walk_in_ratio=(walk_ins, appointments),
+    )
+
+
+def _in_call_order(data: QueueData, extra: Ticket | None = None) -> list[Ticket]:
+    """The waiting tokens (and `extra`, a token being added) in the order call-next follows."""
+    waiting = [token for token in data.tokens if token.status == "waiting"]
+    if extra is not None:
+        waiting.append(extra)
+    return call_order(sorted(waiting, key=base_key), data.history, *data.walk_in_ratio)
+
+
+def _called(data: QueueData) -> list[Duration]:
+    return [data.durations[token.id] for token in data.tokens if token.status == "called"]
+
+
+def positions(data: QueueData) -> dict[uuid.UUID, Position]:
+    """Every active token's place and ETA."""
+    order = _in_call_order(data)
+    etas = queue_etas(
+        data.remaining_sec,
+        _called(data),
+        [(token.id, data.durations[token.id]) for token in order],
+        RESOURCES_PER_QUEUE,
+    )
+    found = {
+        token.id: Position(token.token_no, token.status, None, None)
+        for token in data.tokens
+        if token.status != "waiting"
+    }
+    for place, token in enumerate(order):
+        found[token.id] = Position(token.token_no, "waiting", place, etas[token.id])
+    return found
+
+
+async def queue_positions(
+    session: AsyncSession, queue_id: uuid.UUID, now: datetime
+) -> dict[uuid.UUID, Position]:
+    data = await gather(session, queue_id, now)
+    return positions(data) if data is not None else {}
+
+
+async def cached_positions(
+    session: AsyncSession, redis: Redis, queue_id: uuid.UUID, now: datetime, ttl_sec: int
+) -> dict[uuid.UUID, Position]:
+    """Cached for a few seconds under the queue's newest event id. Every change of a queue
+    writes an event with a higher id, so a changed queue never reads an older entry. A queue
+    without events (or whose events retention removed, a week later) uses 0; the TTL ends it.
+    Redis down: computed from the database every time."""
+    newest = await session.scalar(
+        select(func.max(OutboxEvent.id)).where(OutboxEvent.queue_id == queue_id)
+    )
+    key = f"eta:{queue_id}:{newest or 0}"
+    try:
+        raw = await redis.get(key)
+    except (RedisError, OSError):
+        logger.warning("eta cache unavailable; computing from the database")
+        raw = None
+    if raw is not None:
+        return {uuid.UUID(key): _position(value) for key, value in json.loads(raw).items()}
+    found = await queue_positions(session, queue_id, now)
+    try:
+        await redis.set(key, json.dumps({str(k): _plain(v) for k, v in found.items()}), ex=ttl_sec)
+    except (RedisError, OSError):
+        logger.warning("eta cache unavailable; not stored")
+    return found
+
+
+def _plain(position: Position) -> list[Any]:  # Any: JSON values
+    eta = position.eta
+    times = [eta.min_minutes, eta.max_minutes, eta.wait_sec] if eta else None
+    return [position.token_no, position.status, position.ahead_count, times]
+
+
+def _position(value: list[Any]) -> Position:  # Any: JSON values
+    token_no, status, ahead, times = value
+    return Position(token_no, status, ahead, Eta(*times) if times else None)
+
+
+async def call_order_of(
+    session: AsyncSession, queue_id: uuid.UUID, settings: Mapping[str, Any]
+) -> list[QueueToken]:  # Any: jsonb values
+    """The waiting tokens in the order call-next will follow them."""
+    waiting = (
+        await session.scalars(
+            select(QueueToken)
+            .where(QueueToken.queue_id == queue_id, QueueToken.status == "waiting")
+            .order_by(*base_order())
+        )
+    ).all()
+    walk_ins, appointments = ratio(settings)
+    recent = (await session.execute(history_query(queue_id, walk_ins + appointments))).all()
+    return call_order(waiting, [source for source, _ in recent], walk_ins, appointments)
+
+
+def _token_query() -> Select[QueueToken, date, str, str]:
     return (
-        select(QueueToken, Queue.queue_date, Queue.status, Business.timezone, _ahead_count())
+        select(QueueToken, Queue.queue_date, Queue.status, Business.timezone)
         .join(Queue, Queue.id == QueueToken.queue_id)
         .join(Business, Business.id == QueueToken.business_id)
     )
 
 
-def _token_out(row: Row[QueueToken, date, str, str, int | None]) -> ActiveTokenOut:
-    token, queue_date, queue_status, timezone, ahead = row
+def eta_out(position: Position | None) -> EtaOut | None:
+    eta = position.eta if position is not None else None
+    return EtaOut(min_minutes=eta.min_minutes, max_minutes=eta.max_minutes) if eta else None
+
+
+def _token_out(row: Row[QueueToken, date, str, str], position: Position | None) -> ActiveTokenOut:
+    token, queue_date, queue_status, timezone = row
     zone = get_zone(timezone)
     return ActiveTokenOut(
         id=token.id,
@@ -354,21 +647,12 @@ def _token_out(row: Row[QueueToken, date, str, str, int | None]) -> ActiveTokenO
         queued_at=token.queued_at.astimezone(zone).isoformat(),
         joined_at=token.joined_at.astimezone(zone).isoformat(),
         version=token.version,
-        ahead_count=ahead,
+        ahead_count=position.ahead_count if position is not None else None,
+        eta=eta_out(position),
         business_id=token.business_id,
         queue_date=queue_date,
         queue_status=queue_status,
     )
-
-
-def active_tokens_with_ahead(queue_id: uuid.UUID) -> Select[uuid.UUID, int, str, int | None]:
-    """Every active token of a queue with its waiting-ahead count: one query for a whole queue."""
-    return select(
-        QueueToken.id,
-        QueueToken.token_no,
-        QueueToken.status,
-        _ahead_count().label("ahead"),
-    ).where(QueueToken.queue_id == queue_id, QueueToken.status.in_(ACTIVE_TOKEN_STATUSES))
 
 
 async def board(session: AsyncSession, queue_id: uuid.UUID) -> dict[str, list[int]]:
@@ -408,30 +692,70 @@ async def board(session: AsyncSession, queue_id: uuid.UUID) -> dict[str, list[in
     }
 
 
-async def own_token(session: AsyncSession, token_id: uuid.UUID, customer_id: uuid.UUID) -> TokenOut:
+async def own_token(
+    session: AsyncSession,
+    token_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    redis: Redis,
+    now: datetime,
+    ttl_sec: int,
+) -> TokenOut:
     """The customer's own token; anyone else's is the same 404 as a missing id."""
-    owner = await session.scalar(select(QueueToken.customer_id).where(QueueToken.id == token_id))
-    if owner != customer_id:
-        raise NotFound("Token not found")
-    return await _read_token(session, token_id)
-
-
-async def _read_token(session: AsyncSession, token_id: uuid.UUID) -> TokenOut:
-    row = (await session.execute(_token_query().where(QueueToken.id == token_id))).one()
-    return TokenOut.model_validate(_token_out(row).model_dump())
-
-
-async def list_active_tokens(session: AsyncSession, customer_id: uuid.UUID) -> list[ActiveTokenOut]:
-    """One statement: the caller's own active tokens with their queue and position."""
-    rows = await session.execute(
-        _token_query()
-        .where(
-            QueueToken.customer_id == customer_id,
-            QueueToken.status.in_(ACTIVE_TOKEN_STATUSES),
+    found = (
+        await session.execute(
+            select(QueueToken.customer_id, QueueToken.queue_id).where(QueueToken.id == token_id)
         )
-        .order_by(QueueToken.joined_at, QueueToken.id)
-    )
-    return [_token_out(row) for row in rows.all()]
+    ).one_or_none()
+    if found is None or found.customer_id != customer_id:
+        raise NotFound("Token not found")
+    places = await cached_positions(session, redis, found.queue_id, now, ttl_sec)
+    return await _read_token(session, token_id, places.get(token_id))
+
+
+async def _read_token(
+    session: AsyncSession, token_id: uuid.UUID, position: Position | None
+) -> TokenOut:
+    row = (await session.execute(_token_query().where(QueueToken.id == token_id))).one()
+    return TokenOut.model_validate(_token_out(row, position).model_dump())
+
+
+async def list_active_tokens(
+    session: AsyncSession, customer_id: uuid.UUID, redis: Redis, now: datetime, ttl_sec: int
+) -> list[ActiveTokenOut]:
+    """The caller's own active tokens with their queue, position and ETA."""
+    rows = (
+        await session.execute(
+            _token_query()
+            .where(
+                QueueToken.customer_id == customer_id,
+                QueueToken.status.in_(ACTIVE_TOKEN_STATUSES),
+            )
+            .order_by(QueueToken.joined_at, QueueToken.id)
+        )
+    ).all()
+    places: dict[uuid.UUID, Position] = {}
+    for queue_id in {row[0].queue_id for row in rows}:  # one active token per queue
+        places |= await cached_positions(session, redis, queue_id, now, ttl_sec)
+    return [_token_out(row, places.get(row[0].id)) for row in rows]
+
+
+def _joining(
+    data: QueueData | None, token: Ticket, service_id: uuid.UUID | None
+) -> Position | None:
+    """A new token's place, from the queue as read before its lock plus this token. Joins in
+    the same burst do not see each other, so their predictions can be slightly low."""
+    if data is None:
+        return None
+    duration = data.by_service[service_id] if service_id else data.walk_in
+    order = _in_call_order(data, token)
+    place = order.index(token)
+    ahead = _called(data) + [data.durations[waiting.id] for waiting in order[:place]]
+    eta = queue_etas(data.remaining_sec, ahead, [(token.id, duration)], RESOURCES_PER_QUEUE)
+    return Position(token.token_no, "waiting", place, eta[token.id])
+
+
+def _predicted(position: Position | None) -> int | None:
+    return position.eta.wait_sec if position is not None and position.eta is not None else None
 
 
 async def _issue_token(session: AsyncSession, queue: Queue, **values: object) -> uuid.UUID:
@@ -485,7 +809,9 @@ def _require_open(queue: Queue) -> None:
 async def join_queue(
     session: AsyncSession, queue_id: uuid.UUID, customer_id: uuid.UUID, now: datetime
 ) -> TokenOut:
-    """Walk-in join. No-shows do not block walk-ins."""
+    """Walk-in join. No-shows do not block walk-ins. The ETA inputs are read before the queue
+    lock, so the lock is held no longer than before."""
+    data = await gather(session, queue_id, now)
     queue, business = await _lock_queue(session, queue_id)
     _require_open(queue)
     if queue.queue_date != now.astimezone(get_zone(business.timezone)).date():
@@ -499,23 +825,27 @@ async def join_queue(
     )
     if (walk_ins or 0) >= business.settings["max_walk_ins"]:
         raise WalkInsFull("Walk-ins are full for today")
+    values: dict[str, Any] = {  # Any: column values
+        "source": "walk_in",
+        "customer_id": customer_id,
+        "status": "waiting",
+        "priority": 0,
+        "joined_at": now,
+        "queued_at": now,
+    }
+    token_id = uuid.uuid4()
+    new = Ticket(token_id, "waiting", "walk_in", 0, now, queue.last_token_no + 1, None)
+    position = _joining(data, new, None)
     try:
-        token_id = await _issue_token(
-            session,
-            queue,
-            source="walk_in",
-            customer_id=customer_id,
-            status="waiting",
-            priority=0,
-            joined_at=now,
-            queued_at=now,
+        await _issue_token(
+            session, queue, id=token_id, predicted_wait_sec=_predicted(position), **values
         )
     except _DuplicateToken:
         await session.rollback()  # the number goes back with the rest
         raise AlreadyInQueue("You already have a token in this queue") from None
     await emit_token_event(session, token_id, "token.joined", now)
     await session.commit()
-    return await _read_token(session, token_id)
+    return await _read_token(session, token_id, position)
 
 
 async def visible_appointment(
@@ -548,7 +878,7 @@ async def check_in(
         raise NotFound("Appointment not found")
     appointment, duration_min, business = row
     if appointment.status == "checked_in":
-        return await _appointment_token(session, appointment.id), False
+        return await _appointment_token(session, appointment.id, now), False
     if appointment.status != "booked":
         raise InvalidTransition(f"Cannot check in an appointment that is {appointment.status}")
     start = appointment.during.lower
@@ -561,24 +891,30 @@ async def check_in(
     # The slot's local day, not today's: a check-in just before midnight joins tomorrow's queue.
     day = start.astimezone(get_zone(business.timezone)).date()
     created = await get_or_create_queue(session, business.id, appointment.resource_id, day)
+    data = await gather(session, created.id, now)  # before the queue lock, as in join
     queue, _ = await _lock_queue(session, created.id)
     _require_open(queue)
+    values: dict[str, Any] = {  # Any: column values
+        "source": "appointment",
+        "appointment_id": appointment.id,
+        "customer_id": appointment.customer_id,
+        "status": "waiting",
+        "priority": 0,
+        "joined_at": now,
+        "queued_at": start if on_time else now,
+    }
+    token_id = uuid.uuid4()
+    queued_at = values["queued_at"]
+    new = Ticket(token_id, "waiting", "appointment", 0, queued_at, queue.last_token_no + 1, None)
+    position = _joining(data, new, appointment.service_id)
     try:
-        token_id = await _issue_token(
-            session,
-            queue,
-            source="appointment",
-            appointment_id=appointment.id,
-            customer_id=appointment.customer_id,
-            status="waiting",
-            priority=0,
-            joined_at=now,
-            queued_at=start if on_time else now,
+        await _issue_token(
+            session, queue, id=token_id, predicted_wait_sec=_predicted(position), **values
         )
     except _DuplicateToken as duplicate:
         await session.rollback()
         if duplicate.constraint == ONE_TOKEN_PER_APPOINTMENT:
-            return await _appointment_token(session, appointment_id), False
+            return await _appointment_token(session, appointment_id, now), False
         raise AlreadyInQueue("The customer already has a token in this queue") from None
     await session.execute(
         update(Appointment).where(Appointment.id == appointment.id).values(status="checked_in")
@@ -595,16 +931,23 @@ async def check_in(
         )
     await emit_token_event(session, token_id, "token.joined", now)
     await session.commit()
-    return await _read_token(session, token_id), True
+    return await _read_token(session, token_id, position), True
 
 
-async def _appointment_token(session: AsyncSession, appointment_id: uuid.UUID) -> TokenOut:
-    token_id = await session.scalar(
-        select(QueueToken.id).where(QueueToken.appointment_id == appointment_id)
-    )
-    if token_id is None:
+async def _appointment_token(
+    session: AsyncSession, appointment_id: uuid.UUID, now: datetime
+) -> TokenOut:
+    found = (
+        await session.execute(
+            select(QueueToken.id, QueueToken.queue_id).where(
+                QueueToken.appointment_id == appointment_id
+            )
+        )
+    ).one_or_none()
+    if found is None:
         raise InvalidTransition("The appointment has no token")
-    return await _read_token(session, token_id)
+    places = await queue_positions(session, found.queue_id, now)
+    return await _read_token(session, found.id, places.get(found.id))
 
 
 async def leave_queue(
@@ -695,18 +1038,22 @@ async def find_member_token(session: AsyncSession, token_id: uuid.UUID, user_id:
 
 
 async def staff_token(session: AsyncSession, token_id: uuid.UUID) -> SnapshotToken:
-    """One statement: the token, its customer's name, its zone and its place among waiting."""
+    """The token, its customer's name, and its place in call order while it waits."""
     row = (
         await session.execute(
-            select(QueueToken, User.name, Business.timezone, _ahead_count())
+            select(QueueToken, User.name, Business.timezone, Business.settings)
             .join(User, User.id == QueueToken.customer_id)
             .join(Business, Business.id == QueueToken.business_id)
             .where(QueueToken.id == token_id)
             .execution_options(populate_existing=True)
         )
     ).one()
-    token, name, timezone, ahead = row
-    return _staff_token(token, name, get_zone(timezone), None if ahead is None else ahead + 1)
+    token, name, timezone, settings = row
+    place = None
+    if token.status == "waiting":
+        order = await call_order_of(session, token.queue_id, settings)
+        place = [waiting.id for waiting in order].index(token.id) + 1
+    return _staff_token(token, name, get_zone(timezone), place)
 
 
 async def call_next(

@@ -25,6 +25,7 @@ TOKEN_KEYS = {
     "joined_at",
     "version",
     "ahead_count",
+    "eta",
 }
 SLOT = utc(9)  # Monday 2026-11-02 09:00 in Kolkata, as UTC
 
@@ -543,10 +544,14 @@ async def test_active_tokens_validation_roles_and_statement_count(api: Api) -> N
     event.listen(engine, "before_cursor_execute", record)
     try:
         response = await api.client.get("/v1/tokens", params={"active": "true"}, headers=headers)
+        first = len(statements)
+        await api.client.get("/v1/tokens", params={"active": "true"}, headers=headers)
     finally:
         event.remove(engine, "before_cursor_execute", record)
     assert len(response.json()) == 1
-    assert len(statements) == 2  # the role check and one token query
+    # the role check, one token query, the queue's newest event id, then the queue's 5 ETA
+    # reads on a cache miss; the next call within the TTL is served from the cache
+    assert (first, len(statements) - first) == (8, 3)
 
 
 # --- timezone guard ---

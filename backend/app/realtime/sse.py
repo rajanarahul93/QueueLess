@@ -14,8 +14,10 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -24,7 +26,9 @@ from app.models import OutboxEvent, QueueToken, User
 from app.realtime.hub import RESYNC, Client, Hub
 from app.realtime.relay import envelope
 from app.services import queue as queue_service
+from app.services.queue import Position
 
+LATE_EVENTS = ("token.running_late", "token.running_late_cleared")
 HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
 RETRY_MS = 3000
 RECHECK_SEC = 60.0
@@ -202,28 +206,30 @@ def staff_view(
 
 
 def customer_view(
-    sessions: async_sessionmaker[AsyncSession], hub: Hub, queue_id: uuid.UUID, token_id: uuid.UUID
+    sessions: async_sessionmaker[AsyncSession],
+    hub: Hub,
+    queue_id: uuid.UUID,
+    token_id: uuid.UUID,
+    redis: Redis,
+    clock: Callable[[], float],
+    ttl_sec: int,
 ) -> View:
-    """Only this customer's own token: status, number, waiting tokens ahead, and whether it is
-    their turn. Sent only when that changes (FR-24); never another token, never priority."""
+    """Only this customer's own token: status, number, waiting tokens ahead, ETA, and whether it
+    is their turn. Sent only when that changes (FR-24); never another token, never priority."""
     sent: dict[str, Any] = {}
+
+    def now() -> datetime:
+        return datetime.fromtimestamp(clock(), UTC)
 
     async def current(session: AsyncSession) -> dict[str, Any]:
         token = await session.get(QueueToken, token_id)
         assert token is not None
-        ahead = await session.scalar(
-            select(func.count()).where(
-                QueueToken.queue_id == queue_id,
-                QueueToken.status == "waiting",
-                queue_service.ahead_of(QueueToken, token),
-            )
-        )
-        return _customer_state(token.id, token.token_no, token.status, ahead or 0)
+        places = await queue_service.queue_positions(session, queue_id, now())
+        return _customer_state(token_id, token.token_no, token.status, places.get(token_id))
 
-    async def queue_states() -> dict[str, tuple[int, str, int | None]]:
+    async def fresh() -> dict[uuid.UUID, Position]:
         async with sessions() as session:
-            rows = (await session.execute(queue_service.active_tokens_with_ahead(queue_id))).all()
-        return {str(row.id): (row.token_no, row.status, row.ahead) for row in rows}
+            return await queue_service.cached_positions(session, redis, queue_id, now(), ttl_sec)
 
     async def snapshot(session: AsyncSession) -> Any:  # Any: JSON
         state = await current(session)
@@ -237,36 +243,51 @@ def customer_view(
         sent.update(state)
         return [frame("token.updated", state, event_id)]
 
-    async def on_event(event: Event) -> Frames:
-        states = await hub.cached(("customer", event["id"]), queue_states)
-        mine = str(token_id)
-        if mine in states:
-            number, status, ahead = states[mine]
-            state = _customer_state(token_id, number, status, ahead or 0)
-        elif event["data"].get("token_id") == mine:  # it just left the active tokens
-            state = _customer_state(token_id, event["data"]["token_no"], event["data"]["status"], 0)
-        else:
+    def late(event: Event) -> Frames:
+        """The running-late events of this customer's own token, as they are."""
+        data = event["data"]
+        if event["type"] not in LATE_EVENTS or data.get("token_id") != str(token_id):
             return []
-        return await changed(state, event["id"])
+        notice = {"delay_min": data["delay_min"], "eta": data.get("eta")}
+        return [frame(event["type"], notice, event["id"])]
+
+    async def on_event(event: Event) -> Frames:
+        notice = late(event)
+        places = await hub.cached(("customer", event["id"]), fresh)
+        if token_id in places:
+            place = places[token_id]
+            state = _customer_state(token_id, place.token_no, place.status, place)
+        elif event["data"].get("token_id") == str(token_id):  # it just left the active tokens
+            data = event["data"]
+            state = _customer_state(token_id, data["token_no"], data["status"], None)
+        else:
+            return notice
+        return notice + await changed(state, event["id"])
 
     async def catch_up(events: list[Event]) -> Frames:
         if not events:
             return []
+        notices = [chunk for event in events for chunk in late(event)]
         async with sessions() as session:
             state = await current(session)
-        return await changed(state, events[-1]["id"])
+        return notices[-1:] + await changed(state, events[-1]["id"])  # the latest notice only
 
     return View(queue_id, snapshot, on_event, catch_up)
 
 
-def _customer_state(token_id: uuid.UUID, number: int, status: str, ahead: int) -> dict[str, Any]:
+def _customer_state(
+    token_id: uuid.UUID, number: int, status: str, place: Position | None
+) -> dict[str, Any]:
     waiting = status == "waiting"
+    ahead = place.ahead_count if place is not None and waiting else None
+    eta = queue_service.eta_out(place) if waiting else None
     return {
         "token_id": str(token_id),
         "token_no": number,
         "status": status,
-        "ahead_count": ahead if waiting else None,
+        "ahead_count": ahead,
         "next": status == "called" or (waiting and ahead == 0),
+        "eta": eta.model_dump() if eta is not None else None,
     }
 
 

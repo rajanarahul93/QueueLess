@@ -331,7 +331,7 @@ async def test_service_duration_and_buffer_checks(conn: AsyncConnection, seed: S
 
 
 async def test_daily_stats_hour_range(conn: AsyncConnection, seed: Seed) -> None:
-    def stat(hour: int) -> Executable:
+    def stat(hour: int | None) -> Executable:
         return insert(DailyStat).values(
             business_id=seed.business_id,
             service_id=seed.service_id,
@@ -343,3 +343,38 @@ async def test_daily_stats_hour_range(conn: AsyncConnection, seed: Seed) -> None
     await rejects(conn, stat(24), "ck_daily_stats_hour_range")
     await conn.execute(stat(0))
     await conn.execute(stat(23))
+    await conn.execute(stat(None))  # NULL: the whole-day row; the CHECK lets it through
+
+
+async def test_daily_stats_key_treats_nulls_as_equal(conn: AsyncConnection, seed: Seed) -> None:
+    """NULLS NOT DISTINCT: a second whole-day row (hour NULL) or a second never-started
+    walk-in row (service NULL) of the same day is a duplicate; any other key value is not."""
+    day = NINE_AM.date()
+
+    def stat(service_id: uuid.UUID | None, hour: int | None, **other: Any) -> Executable:
+        return insert(DailyStat).values(
+            business_id=other.get("business_id", seed.business_id),
+            service_id=service_id,
+            stat_date=other.get("stat_date", day),
+            hour=hour,
+        )
+
+    for service_id, hour in ((seed.service_id, None), (None, 9), (None, None)):
+        await conn.execute(stat(service_id, hour))
+        await rejects(conn, stat(service_id, hour), "uq_daily_stats_key")
+    await conn.execute(stat(seed.service_id, 9))  # a different hour from the whole-day row
+    await conn.execute(stat(None, 10))  # a different hour of the NULL service
+    await conn.execute(stat(None, None, stat_date=day + timedelta(days=1)))  # another day
+    other_business = await conn.scalar(
+        insert(Business)
+        .values(
+            owner_id=await new_user(conn, role="owner"),
+            name="Other",
+            category="c",
+            timezone="Asia/Kolkata",
+            open_hours={},
+            settings={},
+        )
+        .returning(Business.id)
+    )
+    await conn.execute(stat(None, None, business_id=other_business))  # another business
