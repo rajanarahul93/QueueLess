@@ -12,12 +12,40 @@ const COPY: Record<string, string> = {
   NOT_FOUND: "We couldn't find that.",
   VALIDATION_ERROR: "Some details aren't valid. Check the highlighted fields.",
   INTERNAL_ERROR: "Something went wrong on our side. Please try again.",
+  SLOT_TAKEN: "That time was just taken. Pick another.",
+  BOOKING_LIMIT_REACHED: "You already have 5 upcoming appointments. Cancel one to book another.",
+  BOOKING_RESTRICTED:
+    "Booking is paused on your account after missed appointments. You can still join the queue in person.",
+  IDEMPOTENCY_CONFLICT: "Your booking is still being processed. Check your appointments before trying again.",
+  RESCHEDULE_CUTOFF: "This appointment starts too soon to move. You can still cancel it.",
+  INVALID_TRANSITION: "This appointment can't be changed any more.",
 };
+
+/** Every code the booking screens can receive; each has its own message above. */
+export const BOOKING_CODES = [
+  "SLOT_TAKEN",
+  "BOOKING_LIMIT_REACHED",
+  "BOOKING_RESTRICTED",
+  "RATE_LIMITED",
+  "IDEMPOTENCY_CONFLICT",
+  "SERVICE_UNAVAILABLE",
+  "NOT_FOUND",
+  "FORBIDDEN",
+  "VALIDATION_ERROR",
+  "NETWORK",
+] as const;
+
+export function hasCopy(code: string): boolean {
+  return code in COPY;
+}
 
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.code === "RATE_LIMITED" && error.retryAfterSec) {
       return `Too many attempts. Try again in ${formatWait(error.retryAfterSec)}.`;
+    }
+    if (error.code === "SERVICE_UNAVAILABLE" && error.retryAfterSec) {
+      return `We can't do that right now. Try again in ${formatWait(error.retryAfterSec)}.`;
     }
     return COPY[error.code] ?? COPY.INTERNAL_ERROR;
   }

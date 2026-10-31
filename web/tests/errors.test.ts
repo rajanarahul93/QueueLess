@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "@/lib/api/client";
-import { errorMessage, invalidFields } from "@/lib/api/errors";
+import { BOOKING_CODES, errorMessage, hasCopy, invalidFields } from "@/lib/api/errors";
 
 const problem = (code: string, body: Record<string, unknown> = {}, retry: number | null = null) =>
   new ApiError(400, code, retry, { code, detail: "raw server detail", ...body });
@@ -31,5 +31,18 @@ describe("invalidFields", () => {
     const error = problem("VALIDATION_ERROR", { errors: [{ loc: ["body", "email"], msg: "x" }] });
     expect(invalidFields(error)).toEqual(["email"]);
     expect(invalidFields(problem("OTP_INVALID"))).toEqual([]);
+  });
+});
+
+describe("the booking error copy", () => {
+  it("has its own message for every booking code", () => {
+    const missing = BOOKING_CODES.filter((code) => !hasCopy(code));
+    expect(missing).toEqual([]);
+    const messages = BOOKING_CODES.map((code) => errorMessage(problem(code)));
+    expect(new Set(messages).size).toBe(BOOKING_CODES.length); // all distinct
+  });
+
+  it("counts down for RATE_LIMITED and SERVICE_UNAVAILABLE with Retry-After", () => {
+    expect(errorMessage(problem("SERVICE_UNAVAILABLE", {}, 5))).toBe("We can't do that right now. Try again in 5 s.");
   });
 });

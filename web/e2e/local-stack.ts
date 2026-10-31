@@ -11,9 +11,13 @@ function compose(...args: string[]): string {
 
 /** Clears the rate-limit buckets (rl:*) in the stack's Redis so repeated e2e runs stay within
  *  the login limits. Refuses unless the API runs with APP_ENV=local. */
-export function clearRateLimits(): void {
+function requireLocal(): void {
   const env = compose("exec", "-T", "api", "printenv", "APP_ENV").trim();
-  if (env !== "local") throw new Error(`refusing to clear rate limits: APP_ENV is ${env || "unset"}`);
+  if (env !== "local") throw new Error(`refusing to touch the stack: APP_ENV is ${env || "unset"}`);
+}
+
+export function clearRateLimits(): void {
+  requireLocal();
   compose(
     "exec",
     "-T",
@@ -21,6 +25,20 @@ export function clearRateLimits(): void {
     "sh",
     "-c",
     "redis-cli --scan --pattern 'rl:*' | xargs -r redis-cli del",
+  );
+}
+
+/** Gives the customer with this phone three no-shows, so booking is restricted (local only). */
+export function restrictBooking(phone: string): void {
+  requireLocal();
+  if (!/^\+\d{8,15}$/.test(phone)) throw new Error("not an E.164 phone");
+  compose(
+    "exec",
+    "-T",
+    "postgres",
+    "sh",
+    "-c",
+    `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE users SET no_show_count = 3 WHERE phone = '${phone}'"`,
   );
 }
 
