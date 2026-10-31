@@ -1,6 +1,8 @@
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
@@ -8,6 +10,7 @@ from sqlalchemy import (
     Row,
     ScalarSelect,
     Select,
+    UnaryExpression,
     and_,
     case,
     exists,
@@ -22,14 +25,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.core.config import Settings
 from app.core.errors import (
     AlreadyInQueue,
     InvalidTransition,
     NotFound,
     QueueClosed,
+    ValidationFailed,
     VersionConflict,
     WalkInsFull,
 )
+from app.core.security import create_stream_token
 from app.core.timezones import get_zone
 from app.db.errors import driver_error
 from app.models import (
@@ -40,6 +46,7 @@ from app.models import (
     QueueToken,
     Resource,
     Service,
+    ServiceSession,
     User,
 )
 from app.schemas.queue import (
@@ -49,14 +56,32 @@ from app.schemas.queue import (
     SnapshotCustomer,
     SnapshotOut,
     SnapshotToken,
+    StreamTokenOut,
     TokenOut,
 )
 from app.services.appointments import visible_to
 from app.services.audit import record_audit
 from app.services.business import get_business
-from app.services.transitions import transition
+from app.services.transitions import Event, transition
 
 ACTIVE_TOKEN_STATUSES = ("waiting", "called", "in_service")
+
+
+# The one ordering definition, shared by the snapshot, ahead_count and call-next. token_no is
+# the final tiebreak: gap-free and assigned in join order under the queue lock.
+def base_order() -> tuple[UnaryExpression[Any], ...]:  # Any: the terms have mixed column types
+    return (QueueToken.priority.desc(), QueueToken.queued_at.asc(), QueueToken.token_no.asc())
+
+
+def ahead_of(other: Any, mine: Any) -> ColumnElement[bool]:  # Any: QueueToken or an alias of it
+    """`other` comes before `mine` in base_order()."""
+    return or_(
+        other.priority > mine.priority,
+        and_(
+            other.priority == mine.priority,
+            tuple_(other.queued_at, other.token_no) < tuple_(mine.queued_at, mine.token_no),
+        ),
+    )
 
 
 async def default_resource(session: AsyncSession, business_id: uuid.UUID) -> Resource:
@@ -158,37 +183,60 @@ async def find_member_queue(
     return MemberQueue(row.Queue, get_zone(row.timezone), counts)
 
 
+def active_tokens_query(queue_id: uuid.UUID) -> Select[QueueToken, str]:
+    """The snapshot's token read: active tokens in base_order(), with the customer's name."""
+    return (
+        select(QueueToken, User.name)
+        .join(User, User.id == QueueToken.customer_id)
+        .where(QueueToken.queue_id == queue_id, QueueToken.status.in_(ACTIVE_TOKEN_STATUSES))
+        .order_by(*base_order())
+    )
+
+
+def next_waiting_query(queue_id: uuid.UUID) -> Select[QueueToken]:
+    """Call-next's pick. The status predicate is re-checked on the locked row, so a token
+    cancelled after the scan is skipped rather than called."""
+    return (
+        select(QueueToken)
+        .where(QueueToken.queue_id == queue_id, QueueToken.status == "waiting")
+        .order_by(*base_order())
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+
+
+def _staff_token(
+    token: QueueToken, name: str, zone: ZoneInfo, order_position: int | None
+) -> SnapshotToken:
+    """The staff view of a token: the customer's id and name only."""
+    return SnapshotToken(
+        id=token.id,
+        token_no=token.token_no,
+        status=token.status,
+        priority=token.priority,
+        source=token.source,
+        skip_count=token.skip_count,
+        version=token.version,
+        joined_at=token.joined_at.astimezone(zone).isoformat(),
+        queued_at=token.queued_at.astimezone(zone).isoformat(),
+        called_at=_local(token.called_at, zone),
+        started_at=_local(token.started_at, zone),
+        order_position=order_position,
+        appointment_id=token.appointment_id,
+        customer=SnapshotCustomer(id=token.customer_id, name=name),
+    )
+
+
 async def get_snapshot(session: AsyncSession, found: MemberQueue) -> SnapshotOut:
     """One statement: the active tokens in the base order, joined to their customers."""
     zone, queue = found.zone, found.queue
-    tokens = await session.execute(
-        select(QueueToken, User.name)
-        .join(User, User.id == QueueToken.customer_id)
-        .where(QueueToken.queue_id == queue.id, QueueToken.status.in_(ACTIVE_TOKEN_STATUSES))
-        .order_by(QueueToken.priority.desc(), QueueToken.queued_at, QueueToken.id)
-    )
+    tokens = await session.execute(active_tokens_query(queue.id))
     items: list[SnapshotToken] = []
     waiting = 0
     for token, name in tokens.all():
         waiting += token.status == "waiting"
-        items.append(
-            SnapshotToken(
-                id=token.id,
-                token_no=token.token_no,
-                status=token.status,
-                priority=token.priority,
-                source=token.source,
-                skip_count=token.skip_count,
-                version=token.version,
-                joined_at=token.joined_at.astimezone(zone).isoformat(),
-                queued_at=token.queued_at.astimezone(zone).isoformat(),
-                called_at=_local(token.called_at, zone),
-                started_at=_local(token.started_at, zone),
-                order_position=waiting if token.status == "waiting" else None,
-                appointment_id=token.appointment_id,
-                customer=SnapshotCustomer(id=token.customer_id, name=name),
-            )
-        )
+        position = waiting if token.status == "waiting" else None
+        items.append(_staff_token(token, name, zone, position))
     return SnapshotOut(
         id=queue.id,
         business_id=queue.business_id,
@@ -216,21 +264,14 @@ class _DuplicateToken(Exception):
 
 
 def _ahead_count() -> ColumnElement[int | None]:
-    """Waiting tokens ahead in the base order (priority DESC, queued_at, id); null when the
-    token itself is not waiting."""
+    """Waiting tokens ahead in base_order(); null when the token itself is not waiting."""
     other = aliased(QueueToken)
     ahead = (
         select(func.count())
         .where(
             other.queue_id == QueueToken.queue_id,
             other.status == "waiting",
-            or_(
-                other.priority > QueueToken.priority,
-                and_(
-                    other.priority == QueueToken.priority,
-                    tuple_(other.queued_at, other.id) < tuple_(QueueToken.queued_at, QueueToken.id),
-                ),
-            ),
+            ahead_of(other, QueueToken),
         )
         .correlate(QueueToken)
         .scalar_subquery()
@@ -254,7 +295,6 @@ def _token_out(row: Row[QueueToken, date, str, str, int | None]) -> ActiveTokenO
         queue_id=token.queue_id,
         token_no=token.token_no,
         status=token.status,
-        priority=token.priority,
         source=token.source,
         queued_at=token.queued_at.astimezone(zone).isoformat(),
         joined_at=token.joined_at.astimezone(zone).isoformat(),
@@ -513,3 +553,251 @@ async def set_queue_status(
         queue.status = status
     await session.commit()
     return QueueOut.model_validate(queue)
+
+
+# --- staff actions: call-next, start, complete, skip, no-show, priority, stream token ---
+# Every token change is a conditional UPDATE on the version the caller read, so a racing change
+# (another staff member, or the customer leaving) leaves exactly one winner.
+
+
+async def find_member_token(session: AsyncSession, token_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """404 unless the caller is owner or staff of the token's business (ids are not public)."""
+    found = await session.scalar(
+        select(QueueToken.id).where(
+            QueueToken.id == token_id,
+            exists().where(
+                BusinessMember.business_id == QueueToken.business_id,
+                BusinessMember.user_id == user_id,
+                BusinessMember.role.in_(("owner", "staff")),
+            ),
+        )
+    )
+    if found is None:
+        raise NotFound("Token not found")
+
+
+async def staff_token(session: AsyncSession, token_id: uuid.UUID) -> SnapshotToken:
+    """One statement: the token, its customer's name, its zone and its place among waiting."""
+    row = (
+        await session.execute(
+            select(QueueToken, User.name, Business.timezone, _ahead_count())
+            .join(User, User.id == QueueToken.customer_id)
+            .join(Business, Business.id == QueueToken.business_id)
+            .where(QueueToken.id == token_id)
+            .execution_options(populate_existing=True)
+        )
+    ).one()
+    token, name, timezone, ahead = row
+    return _staff_token(token, name, get_zone(timezone), None if ahead is None else ahead + 1)
+
+
+async def call_next(
+    session: AsyncSession, queue_id: uuid.UUID, actor_id: uuid.UUID, now: datetime
+) -> SnapshotToken | None:
+    """Calls the first waiting token in base_order(), or returns None when nobody waits. SKIP
+    LOCKED lets concurrent calls take different tokens without waiting on each other; the
+    queue row is not locked. Paused and closed queues may still be served (staff finish)."""
+    queue = await session.get(Queue, queue_id)
+    if queue is None:
+        raise NotFound("Queue not found")
+    business = await get_business(session, queue.business_id)
+    if queue.queue_date != now.astimezone(get_zone(business.timezone)).date():
+        raise QueueClosed("This is not today's queue")
+    token = await session.scalar(
+        next_waiting_query(queue_id).execution_options(populate_existing=True)
+    )
+    if token is None:
+        return None
+    change = transition(token.status, "call", skip_count=token.skip_count, now=now)
+    await session.execute(
+        update(QueueToken)
+        .where(QueueToken.id == token.id, QueueToken.version == token.version)
+        .values(**change.values, version=token.version + 1)
+    )
+    _audit(session, token, actor_id, "token.call")
+    await session.commit()
+    return await staff_token(session, token.id)
+
+
+def _audit(
+    session: AsyncSession,
+    token: QueueToken,
+    actor_id: uuid.UUID,
+    action: str,
+    **data: object,
+) -> None:
+    record_audit(
+        session,
+        business_id=token.business_id,
+        actor_id=actor_id,
+        action=action,
+        entity_type="queue_token",
+        entity_id=token.id,
+        data={"token_no": token.token_no, **data},
+    )
+
+
+async def _read_for_change(session: AsyncSession, token_id: uuid.UUID, version: int) -> QueueToken:
+    """Unlocked read; a stale version is refused before the state is even looked at."""
+    token = await session.scalar(
+        select(QueueToken)
+        .where(QueueToken.id == token_id)
+        .execution_options(populate_existing=True)
+    )
+    if token is None:
+        raise NotFound("Token not found")
+    if token.version != version:
+        raise VersionConflict("The token changed; reload and try again")
+    return token
+
+
+async def _apply(session: AsyncSession, token: QueueToken, values: Mapping[str, object]) -> None:
+    """The conditional UPDATE. Zero rows means another change won since the read: roll back
+    (nothing partial survives) and say which kind of conflict it was."""
+    moved = await session.scalar(
+        update(QueueToken)
+        .where(
+            QueueToken.id == token.id,
+            QueueToken.version == token.version,
+            QueueToken.status == token.status,
+        )
+        .values(**values, version=token.version + 1)
+        .returning(QueueToken.id)
+    )
+    if moved is None:
+        await session.rollback()
+        raise VersionConflict("The token changed; reload and try again")
+
+
+async def _start_service(
+    session: AsyncSession, token: QueueToken, body_service_id: uuid.UUID | None
+) -> uuid.UUID:
+    """The service of the session: the appointment's, or the one staff chose for a walk-in."""
+    if token.appointment_id is not None:
+        if body_service_id is not None:
+            raise ValidationFailed(["body", "service_id"], "Appointment tokens use their service")
+        service_id = await session.scalar(
+            select(Appointment.service_id).where(Appointment.id == token.appointment_id)
+        )
+        assert service_id is not None
+        return service_id
+    if body_service_id is None:
+        raise ValidationFailed(["body", "service_id"], "Required for walk-in tokens")
+    active = await session.scalar(
+        select(Service.id).where(
+            Service.id == body_service_id,
+            Service.business_id == token.business_id,
+            Service.is_active,
+        )
+    )
+    if active is None:  # unknown, inactive or another business's: as when booking
+        raise NotFound("Service not found")
+    return active
+
+
+async def act_on_token(
+    session: AsyncSession,
+    token_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    event: Event,
+    version: int,
+    now: datetime,
+    service_id: uuid.UUID | None = None,
+) -> SnapshotToken:
+    """start, complete, skip or mark_no_show. Order: version, then state, then locks in the
+    global order (customer row only when the outcome is a no-show, then the appointment), then
+    the conditional token UPDATE, then the side effects and the audit row, in one transaction."""
+    token = await _read_for_change(session, token_id, version)
+    change = transition(token.status, event, skip_count=token.skip_count, now=now)
+    session_service = await _start_service(session, token, service_id) if event == "start" else None
+    if change.status == "no_show":
+        await session.execute(
+            select(User.id).where(User.id == token.customer_id).with_for_update(key_share=True)
+        )
+    if token.appointment_id is not None:
+        await session.execute(
+            select(Appointment.id).where(Appointment.id == token.appointment_id).with_for_update()
+        )
+    await _apply(session, token, change.values)
+    await _side_effects(session, token, change.status, now, session_service)
+    _audit(session, token, actor_id, f"token.{event}", status=change.status)
+    await session.commit()
+    return await staff_token(session, token.id)
+
+
+APPOINTMENT_STATUS = {"in_service": "in_service", "completed": "completed", "no_show": "no_show"}
+
+
+async def _side_effects(
+    session: AsyncSession,
+    token: QueueToken,
+    new_status: str,
+    now: datetime,
+    session_service: uuid.UUID | None,
+) -> None:
+    if new_status == "in_service":
+        resource_id = await session.scalar(
+            select(Queue.resource_id).where(Queue.id == token.queue_id)
+        )
+        session.add(
+            ServiceSession(
+                business_id=token.business_id,
+                token_id=token.id,
+                service_id=session_service,
+                resource_id=resource_id,
+                started_at=now,
+            )
+        )
+    elif new_status == "completed":
+        started = await session.scalar(
+            select(ServiceSession.started_at).where(
+                ServiceSession.token_id == token.id, ServiceSession.ended_at.is_(None)
+            )
+        )
+        if started is not None:
+            await session.execute(
+                update(ServiceSession)
+                .where(ServiceSession.token_id == token.id, ServiceSession.ended_at.is_(None))
+                .values(ended_at=now, duration_sec=int((now - started).total_seconds()))
+            )
+    elif new_status == "no_show":
+        # Atomic increment, exactly once: only one conditional UPDATE can make this token a no-show.
+        await session.execute(
+            update(User)
+            .where(User.id == token.customer_id)
+            .values(no_show_count=User.no_show_count + 1)
+        )
+    if token.appointment_id is not None and new_status in APPOINTMENT_STATUS:
+        await session.execute(
+            update(Appointment)
+            .where(Appointment.id == token.appointment_id)
+            .values(status=APPOINTMENT_STATUS[new_status])
+        )
+
+
+async def set_priority(
+    session: AsyncSession,
+    token_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    priority: int,
+    version: int,
+) -> SnapshotToken:
+    """Waiting tokens only; the same value is a no-op (no version bump, no audit row)."""
+    token = await _read_for_change(session, token_id, version)
+    if token.status != "waiting":
+        raise InvalidTransition(f"Cannot change the priority of a token that is {token.status}")
+    if token.priority != priority:
+        await _apply(session, token, {"priority": priority})
+        _audit(session, token, actor_id, "token.priority", old=token.priority, new=priority)
+        await session.commit()
+    return await staff_token(session, token_id)
+
+
+def issue_stream_token(
+    settings: Settings, queue_id: uuid.UUID, user_id: uuid.UUID
+) -> StreamTokenOut:
+    """Issued with real time: the verifier checks expiry against real time."""
+    return StreamTokenOut(
+        stream_token=create_stream_token(settings, "queue", queue_id, user_id),
+        expires_in=settings.stream_token_ttl_sec,
+    )

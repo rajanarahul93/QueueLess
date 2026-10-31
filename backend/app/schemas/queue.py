@@ -1,8 +1,8 @@
 import uuid
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 
 class QueueOut(BaseModel):
@@ -67,13 +67,13 @@ class QueueStatusIn(BaseModel):
 
 
 class TokenOut(BaseModel):
-    """The customer's own token. Times are ISO 8601 with the business-local offset."""
+    """The customer's own token. Times are ISO 8601 with the business-local offset. Priority is
+    a staff matter and stays out of customer responses."""
 
     id: uuid.UUID
     queue_id: uuid.UUID
     token_no: int
     status: str
-    priority: int
     source: str
     queued_at: str
     joined_at: str
@@ -87,3 +87,25 @@ class ActiveTokenOut(TokenOut):
     business_id: uuid.UUID
     queue_date: date
     queue_status: str
+
+
+class VersionIn(BaseModel):
+    """Optimistic lock: the version the staff member last saw."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: StrictInt
+
+
+class StartIn(VersionIn):
+    # Required for walk-in tokens (they have no service); appointment tokens use the appointment's.
+    service_id: uuid.UUID | None = None
+
+
+class PriorityIn(VersionIn):
+    priority: Annotated[StrictInt, Field(ge=0, le=2)]
+
+
+class StreamTokenOut(BaseModel):
+    stream_token: str
+    expires_in: int

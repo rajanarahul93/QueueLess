@@ -20,7 +20,6 @@ TOKEN_KEYS = {
     "queue_id",
     "token_no",
     "status",
-    "priority",
     "source",
     "queued_at",
     "joined_at",
@@ -104,12 +103,7 @@ async def test_join_returns_the_customer_token_in_order(api: Api) -> None:
     assert one.status_code == 201, one.text
     body = one.json()
     assert set(body) == TOKEN_KEYS
-    assert (body["token_no"], body["status"], body["source"], body["priority"]) == (
-        1,
-        "waiting",
-        "walk_in",
-        0,
-    )
+    assert (body["token_no"], body["status"], body["source"]) == (1, "waiting", "walk_in")
     assert body["ahead_count"] == 0 and body["version"] == 1
     assert body["queued_at"] == body["joined_at"] and body["joined_at"].endswith("+05:30")
     api.clock.now += 60  # a later arrival; equal times would fall back to the id tiebreak
