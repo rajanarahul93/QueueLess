@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable
 from typing import cast
 
@@ -37,17 +38,56 @@ async def test_request_is_identical_for_known_and_unknown_phones(api: Api) -> No
     assert len(api.sms.sent) == 2
 
 
+async def redis_contents(redis: Redis) -> list[bytes]:
+    """Every key in Redis and everything stored under it."""
+    found: list[bytes] = []
+    async for key in redis.scan_iter():
+        found.append(key)
+        kind = (await redis.type(key)).decode()
+        if kind == "string":
+            found.append(await redis.get(key))
+        elif kind == "hash":
+            pairs = await cast(Awaitable[dict[bytes, bytes]], redis.hgetall(key))
+            found += [part for pair in pairs.items() for part in pair]
+        elif kind == "zset":
+            found += [member for member, _ in await redis.zrange(key, 0, -1, withscores=True)]
+        elif kind == "set":
+            found += list(await cast(Awaitable[set[bytes]], redis.smembers(key)))
+        elif kind == "list":
+            found += await cast(Awaitable[list[bytes]], redis.lrange(key, 0, -1))
+        else:
+            raise AssertionError(f"unexpected Redis type {kind} at {key!r}")
+    return found
+
+
+def leaks(contents: list[bytes], phone: str, code: str) -> list[bytes]:
+    """Items holding the phone digits anywhere, or the code as a whole token (split on anything
+    that is not a letter or digit). The code is random, so it also turns up by chance inside
+    the 64-character hashes and the expiry digits (about 1 run in 45,000): that is not a leak."""
+    digits, plain = phone[1:].encode(), code.encode()
+    return [
+        item for item in contents if digits in item or plain in re.split(rb"[^0-9A-Za-z]+", item)
+    ]
+
+
 async def test_redis_holds_no_raw_phone_and_no_plain_code(api: Api) -> None:
     phone = new_phone()
     await api.request_otp(phone)
     code = api.last_code()
-    redis = api.redis
-    keys = [key async for key in redis.scan_iter("otp:*")]
-    assert len(keys) == 1
-    values = await cast(Awaitable[list[bytes]], redis.hvals(keys[0]))
-    dump = keys[0] + b"".join(values)
-    assert phone.encode() not in dump and phone[1:].encode() not in dump
-    assert code.encode() not in dump  # only the keyed hash of the code is stored
+    contents = await redis_contents(api.redis)
+    assert any(item.startswith(b"otp:") for item in contents)  # the code is stored (hashed)
+    assert leaks(contents, phone, code) == []
+
+
+async def test_the_leak_check_finds_a_planted_phone_or_code(api: Api) -> None:
+    phone = new_phone()
+    await api.request_otp(phone)
+    code = api.last_code()
+    await api.redis.set("planted:code", f"attempt={code};ok")
+    await cast(Awaitable[int], api.redis.hset("planted:phone", "to", phone))
+    found = leaks(await redis_contents(api.redis), phone, code)
+    assert sorted(found) == sorted([f"attempt={code};ok".encode(), phone.encode()])
+    assert leaks([b"ab" + code.encode() + b"cd"], phone, code) == []  # inside a hash: not a leak
 
 
 async def test_resend_cooldown(api: Api) -> None:
