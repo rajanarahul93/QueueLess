@@ -1,2 +1,7 @@
 node_modules
 .next
+e2e
+tests
+playwright.config.ts
+vitest.config.mts
+scripts
