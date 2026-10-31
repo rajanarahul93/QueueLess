@@ -9,7 +9,8 @@ from fastapi import Depends, Request
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from app.core.dependencies import CurrentUser, get_clock, get_redis
+from app.core.config import Settings
+from app.core.dependencies import CurrentUser, get_clock, get_redis, get_settings
 from app.core.errors import RateLimited, ServiceUnavailable
 
 logger = logging.getLogger(__name__)
@@ -90,3 +91,14 @@ def user_rate_limit(scope: str, *, limit: int, window_sec: int) -> Callable[...,
         await limiter.check(scope, str(user.user_id), limit, window_sec)
 
     return dependency
+
+
+async def token_create_rate_limit(
+    user: CurrentUser,
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """One per-user bucket shared by walk-in join and check-in (both create tokens)."""
+    await limiter.check(
+        "token_create_user", str(user.user_id), settings.join_rate_limit_per_hour, 3600
+    )

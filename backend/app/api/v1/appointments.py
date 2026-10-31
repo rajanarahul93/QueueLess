@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import AwareDatetime
 
 from app.core.config import Settings
@@ -20,7 +20,12 @@ from app.core.dependencies import (
 )
 from app.core.errors import Forbidden, ValidationFailed
 from app.core.idempotency import IdempotentRoute, idempotency
-from app.core.rate_limit import RateLimiter, get_rate_limiter, user_rate_limit
+from app.core.rate_limit import (
+    RateLimiter,
+    get_rate_limiter,
+    token_create_rate_limit,
+    user_rate_limit,
+)
 from app.models import Appointment
 from app.schemas.appointment import (
     AppointmentCreate,
@@ -30,8 +35,10 @@ from app.schemas.appointment import (
     RescheduleIn,
     StaffAppointmentPage,
 )
+from app.schemas.queue import TokenOut
 from app.services import appointments as appointment_service
 from app.services import booking as booking_service
+from app.services import queue as queue_service
 from app.services.appointments import Status
 
 router = APIRouter(prefix="/appointments", tags=["appointments"], route_class=IdempotentRoute)
@@ -111,6 +118,38 @@ async def reschedule(
         session, user.user_id, target, clock, replaces=old.id
     )
     return RescheduledOut(**new.model_dump(), rescheduled_from_id=old.id)
+
+
+async def check_in_target(
+    appointment_id: uuid.UUID, user: CurrentUser, session: SessionDep
+) -> None:
+    """The owning customer, or owner/staff of its business; anyone else 404, before the limit."""
+    await queue_service.visible_appointment(session, appointment_id, user.user_id)
+
+
+@router.post(
+    "/{appointment_id}/check-in",
+    status_code=201,
+    dependencies=[
+        Depends(require_appointment_account),  # admins: 403
+        Depends(check_in_target),
+        Depends(token_create_rate_limit),
+        Depends(idempotency),
+    ],
+)
+async def check_in(
+    appointment_id: uuid.UUID,
+    user: CurrentUser,
+    session: SessionDep,
+    clock: ClockDep,
+    response: Response,
+) -> TokenOut:
+    """201 with a new token; a repeated check-in returns the same token with 200."""
+    now = datetime.fromtimestamp(clock(), UTC)
+    token, created = await queue_service.check_in(session, appointment_id, user.user_id, now)
+    if not created:
+        response.status_code = 200
+    return token
 
 
 @router.delete(

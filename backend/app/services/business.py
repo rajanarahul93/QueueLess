@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFound, ValidationFailed
-from app.models import Appointment, Business, BusinessMember, Resource, Service, User
+from app.models import Appointment, Business, BusinessMember, QueueToken, Resource, Service, User
 from app.models.appointment import ACTIVE_STATUSES
 from app.schemas.business import (
     BusinessCreate,
@@ -20,6 +20,7 @@ from app.schemas.business import (
 from app.services.auth import create_password_user
 
 DEFAULT_RESOURCE_NAME = "Main"
+ACTIVE_TOKEN = ("waiting", "called", "in_service")
 
 
 def default_settings() -> dict[str, Any]:  # Any: jsonb values are mixed ints and objects
@@ -93,6 +94,15 @@ async def _check_timezone_change(
     if pending is not None:
         raise ValidationFailed(
             ["body", "timezone"], "Cannot change the time zone while appointments are active"
+        )
+    waiting = await session.scalar(
+        select(QueueToken.id)
+        .where(QueueToken.business_id == business_id, QueueToken.status.in_(ACTIVE_TOKEN))
+        .limit(1)
+    )
+    if waiting is not None:  # a queue day is a local date, so tokens pin the zone too
+        raise ValidationFailed(
+            ["body", "timezone"], "Cannot change the time zone while tokens are active"
         )
 
 

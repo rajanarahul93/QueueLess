@@ -143,6 +143,7 @@ async def add_token(
     queued_at: datetime | None = None,
     **values: object,
 ) -> str:
+    customer_id = values.pop("customer_id", None)
     person = await api.create_user(
         "customer",
         name=f"Customer {token_no}",
@@ -158,7 +159,7 @@ async def add_token(
                 queue_id=uuid.UUID(queue),
                 token_no=token_no,
                 source="walk_in",
-                customer_id=person.id,
+                customer_id=customer_id or person.id,
                 status=status,
                 priority=priority,
                 queued_at=queued_at or utc(3, 30),

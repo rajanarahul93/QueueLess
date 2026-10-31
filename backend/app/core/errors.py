@@ -107,6 +107,30 @@ class InvalidTransition(DomainError):
     title = "Invalid transition"
 
 
+class QueueClosed(DomainError):
+    code = "QUEUE_CLOSED"
+    status = 409
+    title = "Queue closed"
+
+
+class AlreadyInQueue(DomainError):
+    code = "ALREADY_IN_QUEUE"
+    status = 409
+    title = "Already in queue"
+
+
+class WalkInsFull(DomainError):
+    code = "WALK_INS_FULL"
+    status = 409
+    title = "Walk-ins full"
+
+
+class VersionConflict(DomainError):
+    code = "VERSION_CONFLICT"
+    status = 409
+    title = "Version conflict"
+
+
 class RescheduleCutoff(DomainError):
     code = "RESCHEDULE_CUTOFF"
     status = 409

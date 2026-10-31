@@ -132,3 +132,10 @@ def test_pool_and_booking_limit_defaults_and_validation() -> None:
         for bad in (0, -1):
             with pytest.raises(ValidationError):
                 make_settings(**{name: bad})
+
+
+def test_join_rate_limit_default_and_validation() -> None:
+    assert make_settings().join_rate_limit_per_hour == 20
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            make_settings(join_rate_limit_per_hour=bad)

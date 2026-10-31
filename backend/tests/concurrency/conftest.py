@@ -17,6 +17,10 @@ def migrated_url(postgres_url: str) -> str:
 @pytest.fixture
 async def api(migrated_url: str, redis_url: str) -> AsyncIterator[Api]:
     """A pool big enough for 50 simultaneous requests and limits that do not interfere."""
-    overrides: dict[str, object] = {"db_pool_size": 50, "booking_rate_limit_per_hour": 1000}
+    overrides: dict[str, object] = {
+        "db_pool_size": 50,
+        "booking_rate_limit_per_hour": 1000,
+        "join_rate_limit_per_hour": 1000,
+    }
     async with open_api(migrated_url, redis_url, overrides) as opened:
         yield opened

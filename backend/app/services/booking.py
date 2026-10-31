@@ -21,6 +21,7 @@ from app.core.errors import (
     ValidationFailed,
 )
 from app.core.timezones import get_zone
+from app.db.errors import driver_error
 from app.models import Appointment, Business, Resource, Service, User
 from app.models.appointment import ACTIVE_STATUSES
 from app.schemas.appointment import AppointmentOut, AvailabilityOut, SlotOut
@@ -273,11 +274,8 @@ def check_start(target: BookingTarget, now: datetime) -> None:
 
 def classify_pg_error(error: DBAPIError) -> Literal["overlap", "deadlock"] | None:
     """Reads the driver's SQLSTATE and constraint name, never the message text."""
-    cause = error.orig.__cause__ if error.orig is not None else None
-    sqlstate = getattr(cause, "sqlstate", None)
-    if sqlstate == EXCLUSION_VIOLATION and getattr(cause, "constraint_name", None) == (
-        OVERLAP_CONSTRAINT
-    ):
+    sqlstate, constraint = driver_error(error)
+    if sqlstate == EXCLUSION_VIOLATION and constraint == OVERLAP_CONSTRAINT:
         return "overlap"
     if sqlstate == DEADLOCK_DETECTED:
         return "deadlock"
