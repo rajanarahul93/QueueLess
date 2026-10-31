@@ -479,6 +479,7 @@ async def test_a_started_appointment_cannot_be_cancelled_by_anyone(api: Api) -> 
     for who in (headers, staff, w.owner):
         response = await api.client.delete(f"{URL}/{appointment_id}", headers=who)
         assert response.status_code == 409 and code(response) == "INVALID_TRANSITION"
+        assert "reason" not in response.json()  # only check-in says why
     assert await status_of(api, appointment_id) == "booked"
     assert await audit_rows(api, appointment_id) == []
 

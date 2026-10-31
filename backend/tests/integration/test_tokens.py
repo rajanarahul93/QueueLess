@@ -17,6 +17,7 @@ pytestmark = pytest.mark.anyio
 
 TOKEN_KEYS = {
     "id",
+    "business_id",
     "queue_id",
     "token_no",
     "status",
@@ -255,6 +256,7 @@ async def test_check_in_window_grace_and_queued_at(
         assert response.status_code == 409 and code(response) == "INVALID_TRANSITION"
         detail = response.json()["detail"]
         assert ("opens" in detail) if offset_min < 0 else ("ended" in detail)
+        assert response.json()["reason"] == ("too_early" if offset_min < 0 else "too_late")
         assert await appointment_status(api, appointment_id) == "booked"
         return
     assert response.status_code == 201, response.text
@@ -344,6 +346,7 @@ async def test_check_in_roles_and_states(api: Api) -> None:
     await api.client.delete(f"/v1/appointments/{cancelled}", headers=other_headers)
     refused = await check_in(api, other_headers, cancelled)
     assert refused.status_code == 409 and code(refused) == "INVALID_TRANSITION"
+    assert refused.json()["reason"] == "not_booked"
 
 
 async def test_check_in_with_a_walk_in_token_already_held_is_refused(api: Api) -> None:
@@ -399,6 +402,7 @@ async def test_leave_by_status(api: Api, status: str, expected: int) -> None:
     assert response.status_code == expected
     if expected == 409:
         assert code(response) == "INVALID_TRANSITION"
+        assert "reason" not in response.json()  # only check-in says why
         assert (await token_row(api, token_id)).status == status
 
 
@@ -420,6 +424,27 @@ async def test_leave_roles_and_strangers(api: Api) -> None:
         assert (await leave(api, role, token)).status_code == 403
     assert (await api.client.delete(f"/v1/tokens/{token}")).status_code == 401
     assert (await token_row(api, token)).status == "waiting"
+
+
+async def test_token_responses_carry_their_business(api: Api) -> None:
+    w = await world(api)
+    other = await world(api)
+    _, headers = await customer(api)
+    joined = (await join(api, headers, await queue_id(w))).json()
+    _, elsewhere = await customer(api)
+    theirs = (await join(api, elsewhere, await queue_id(other))).json()
+    assert joined["business_id"] == str(w.business_id) and theirs["business_id"] == str(
+        other.business_id
+    )
+    detail = await api.client.get(f"/v1/tokens/{joined['id']}", headers=headers)
+    assert detail.status_code == 200 and detail.json()["business_id"] == str(w.business_id)
+    missing = await api.client.get(f"/v1/tokens/{uuid.uuid4()}", headers=headers)
+    foreign = await api.client.get(f"/v1/tokens/{theirs['id']}", headers=headers)
+    assert foreign.status_code == missing.status_code == 404 and foreign.json() == missing.json()
+    _, appointment_headers, appointment_id = await booked(w)
+    api.clock.now = SLOT.timestamp()
+    checked_in = (await check_in(api, appointment_headers, appointment_id)).json()
+    assert checked_in["business_id"] == str(w.business_id)
 
 
 async def test_leaving_an_appointment_token_cancels_the_appointment(api: Api) -> None:
@@ -520,7 +545,7 @@ async def test_active_tokens_are_own_only_with_ahead_count(api: Api) -> None:
     ]
     by_id = {item["id"]: item for item in items}
     assert by_id[mine]["ahead_count"] == 2 and by_id[called]["ahead_count"] is None
-    assert set(by_id[mine]) == TOKEN_KEYS | {"business_id", "queue_date", "queue_status"}
+    assert set(by_id[mine]) == TOKEN_KEYS | {"queue_date", "queue_status"}
     assert by_id[mine]["queue_date"] == "2026-11-01" and by_id[mine]["queue_status"] == "open"
 
 

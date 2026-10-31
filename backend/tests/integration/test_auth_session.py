@@ -191,6 +191,7 @@ async def test_preflight_allows_only_the_configured_origin_and_headers(api: Api)
     assert allowed.status_code == 200
     assert allowed.headers["access-control-allow-origin"] == ORIGIN
     assert allowed.headers["access-control-allow-credentials"] == "true"
+    assert allowed.headers["access-control-max-age"] == "600"
     allow_headers = {
         h.strip().lower() for h in allowed.headers["access-control-allow-headers"].split(",")
     }

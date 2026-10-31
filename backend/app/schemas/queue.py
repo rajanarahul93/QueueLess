@@ -78,6 +78,7 @@ class TokenOut(BaseModel):
     a staff matter and stays out of customer responses."""
 
     id: uuid.UUID
+    business_id: uuid.UUID
     queue_id: uuid.UUID
     token_no: int
     status: str
@@ -96,7 +97,6 @@ class TokenWithStreamOut(TokenOut):
 
 
 class ActiveTokenOut(TokenOut):
-    business_id: uuid.UUID
     queue_date: date
     queue_status: str
 
