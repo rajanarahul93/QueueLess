@@ -52,7 +52,7 @@ services:
       redis: {condition: service_healthy}
       api: {condition: service_started}
     healthcheck:
-      test: ["CMD", "arq", "--check", "app.workers.main.WorkerSettings"]
+      test: ["CMD", "python", "-m", "app.workers.health"]  # arq check + a fresh relay pass
       interval: 15s
       timeout: 5s
       retries: 5

@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -6,10 +8,12 @@ from typing import Any
 
 from arq import cron
 from arq.connections import RedisSettings
+from redis.asyncio import Redis
 
 from app.core.config import Settings
 from app.db.session import create_engine, create_session_factory
-from app.services import queue_jobs
+from app.realtime.relay import run_relay
+from app.services import queue_jobs, retention
 
 JOB_TIMEOUT_SEC = 50  # shorter than the one-minute schedule
 WORKER_POOL_SIZE = 5
@@ -28,9 +32,17 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["engine"] = engine
     ctx["sessions"] = create_session_factory(engine)
     ctx.setdefault("clock", time.time)
+    ctx["relay_redis"] = Redis.from_url(settings.redis_url)
+    # The outbox relay runs for the worker's whole life: arq cron cannot run more often than
+    # once a minute, too slow for live updates.
+    ctx["relay"] = asyncio.create_task(run_relay(engine, ctx["sessions"], ctx["relay_redis"]))
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
+    ctx["relay"].cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await ctx["relay"]
+    await ctx["relay_redis"].aclose()
     await ctx["engine"].dispose()
 
 
@@ -53,6 +65,11 @@ async def end_of_day(ctx: dict[str, Any]) -> dict[str, int]:
     return vars(summary)
 
 
+async def clean_retention(ctx: dict[str, Any]) -> dict[str, int]:
+    summary = await retention.clean(ctx["sessions"], _now(ctx))
+    return vars(summary)
+
+
 def _every_minute(job: Any) -> Any:  # Any: arq's cron job type is internal
     # unique: one run per scheduled minute across workers; no retries, the next minute picks up.
     return cron(job, second=0, timeout=JOB_TIMEOUT_SEC, max_tries=1, unique=True)
@@ -63,6 +80,14 @@ class WorkerSettings:
         _every_minute(sweep_no_shows),
         _every_minute(promote_waiting),
         _every_minute(end_of_day),
+        cron(
+            clean_retention,
+            minute=set(range(0, 60, 10)),
+            second=0,
+            timeout=JOB_TIMEOUT_SEC,
+            max_tries=1,
+            unique=True,
+        ),
     ]
     on_startup = startup
     on_shutdown = shutdown

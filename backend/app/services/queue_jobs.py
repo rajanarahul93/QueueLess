@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.errors import DomainError
 from app.core.timezones import get_zone
 from app.models import AuditLog, Business, Queue, QueueToken
+from app.realtime.outbox import emit_token_event
 from app.services.audit import record_audit
-from app.services.queue import apply_event
+from app.services.queue import apply_event, emit_queue_status
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ async def promote_waiting(sessions: Sessions, now: datetime, batch: int = BATCH)
             data={"token_no": moved.token_no, "from": 0, "to": 1},
             created_at=now,
         )
+        await emit_token_event(session, token_id, "token.priority_changed", now, reason="promotion")
         await session.commit()
         return True
 
@@ -191,7 +193,14 @@ async def end_of_day(sessions: Sessions, now: datetime, batch: int = BATCH) -> S
 
     async def cancel(session: AsyncSession, token_id: uuid.UUID, version: int) -> bool:
         await apply_event(
-            session, token_id, None, "cancel", version, now, action="token.end_of_day"
+            session,
+            token_id,
+            None,
+            "cancel",
+            version,
+            now,
+            action="token.end_of_day",
+            reason="end_of_day",
         )
         return True
 
@@ -209,6 +218,7 @@ def _day_ended(queue_date: date, timezone: str, now: datetime) -> bool:
 
 async def _close(session: AsyncSession, queue_id: uuid.UUID, now: datetime) -> int:
     """Closes the queue once no waiting or called token is left in it (1 if it changed)."""
+    previous = await session.scalar(select(Queue.status).where(Queue.id == queue_id))
     closed = await session.scalar(
         update(Queue)
         .where(
@@ -219,13 +229,14 @@ async def _close(session: AsyncSession, queue_id: uuid.UUID, now: datetime) -> i
             ),
         )
         .values(status="closed")
-        .returning(Queue.business_id)
+        .returning(Queue)
     )
     if closed is None:
         return 0
+    await emit_queue_status(session, closed, str(previous), "closed", now, reason="end_of_day")
     record_audit(
         session,
-        business_id=closed,
+        business_id=closed.business_id,
         actor_id=None,
         action="queue.close",
         entity_type="queue",

@@ -16,8 +16,8 @@ from sqlalchemy import func, insert, select, text, update
 
 from app.core.security import create_access_token
 from app.models import AuditLog, Queue, QueueToken
+from app.realtime.outbox import queue_lock_key
 from app.services import queue_jobs
-from app.services.queue import queue_lock_key
 from tests.integration.api import Api
 from tests.integration.db import alembic_config, reset_schema
 from tests.integration.test_availability import utc
@@ -438,7 +438,22 @@ async def test_ratio_applies_in_paused_and_closed_queues(api: Api, status: str) 
 # --- the advisory lock blocks only call-next on the same queue ---
 
 
-async def test_the_call_next_lock_blocks_nothing_else(api: Api) -> None:
+async def until_waits(api: Api, count: int) -> None:
+    """Until `count` locks are waiting to be granted."""
+    async with api.sessions() as probe:
+        for _ in range(20000):
+            waits = await probe.scalar(text("SELECT count(*) FROM pg_locks WHERE NOT granted"))
+            await probe.rollback()
+            if (waits or 0) >= count:
+                return
+            await asyncio.sleep(0)
+    pytest.fail(f"never saw {count} waiting lock(s)")
+
+
+async def test_the_queue_event_lock_only_holds_back_that_queue(api: Api) -> None:
+    """Since the outbox, every writer of a queue takes its lock just before commit (events of a
+    queue commit in id order). While it is held, other queues carry on; this queue's call-next,
+    join and status change wait, then complete."""
     w = await world(api)
     other = await world(api)
     queue = await ratio_queue(w, "AW")
@@ -447,27 +462,20 @@ async def test_the_call_next_lock_blocks_nothing_else(api: Api) -> None:
         await holder.execute(
             text("SELECT pg_advisory_xact_lock(:k)"), {"k": queue_lock_key(uuid.UUID(queue))}
         )
-        _, walker = await customer(api)
-        assert (await join(api, walker, queue)).status_code == 201  # same queue: not blocked
         assert (await call_next(api, other.owner, elsewhere)).status_code == 200  # other queue
-        assert (await set_status(api, w.owner, queue, "paused")).status_code == 200
-        waiting_call = asyncio.create_task(call_next(api, w.owner, queue))
-        async with api.sessions() as probe:
-            for _ in range(20000):
-                waits = await probe.scalar(
-                    text(
-                        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
-                    )
-                )
-                await probe.rollback()
-                if waits:
-                    break
-                await asyncio.sleep(0)
-            else:
-                pytest.fail("call-next on the locked queue did not wait")
-        assert not waiting_call.done()
-        await holder.commit()  # releases the advisory lock
-    assert (await waiting_call).status_code == 200
+        _, walker = await customer(api)
+        waiting = [
+            asyncio.create_task(call_next(api, w.owner, queue)),
+            asyncio.create_task(join(api, walker, queue)),
+        ]
+        await until_waits(api, 2)
+        # Started only once the join holds the queue row, so the pause commits after the join
+        # (a pause first would rightly turn the join into a 409).
+        waiting.append(asyncio.create_task(set_status(api, w.owner, queue, "paused")))
+        await until_waits(api, 3)  # the status change waits on the row the join holds
+        assert not any(task.done() for task in waiting)
+        await holder.commit()  # releases the lock
+    assert [(await task).status_code for task in waiting] == [200, 201, 200]
 
 
 # --- the real arq path ---
@@ -481,7 +489,13 @@ async def test_each_job_through_the_worker_functions(
 
     assert not hasattr(worker, "noop")
     jobs = {job.name: job for job in worker.WorkerSettings.cron_jobs}
-    assert set(jobs) == {"cron:sweep_no_shows", "cron:promote_waiting", "cron:end_of_day"}
+    assert set(jobs) == {
+        "cron:sweep_no_shows",
+        "cron:promote_waiting",
+        "cron:end_of_day",
+        "cron:clean_retention",
+    }
+    assert jobs["cron:clean_retention"].minute == set(range(0, 60, 10))
     for job in jobs.values():
         assert (job.timeout_s, job.max_tries, job.unique) == (50, 1, True)
     w = await world(api)

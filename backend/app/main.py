@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -6,12 +7,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
-from app.api.v1 import appointments, auth, businesses, queues, tokens
+from app.api.v1 import appointments, auth, businesses, queues, streams, tokens
 from app.core.config import Settings
 from app.core.errors import register_error_handlers
 from app.core.idempotency import Replay, handle_replay
 from app.core.timezones import zone_names
 from app.db.session import create_engine, create_session_factory
+from app.realtime.hub import Hub
+from app.realtime.sse import RedactStreamToken
 from app.services.notifications import create_sms_provider
 
 
@@ -22,6 +25,9 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     """
     resolved = settings or Settings()
     zone_names()  # a broken tzdata install must stop the app at startup
+    access_log = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactStreamToken) for f in access_log.filters):
+        access_log.addFilter(RedactStreamToken())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -33,9 +39,17 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
         app.state.session_factory = create_session_factory(engine)
         app.state.redis = redis
         app.state.sms = create_sms_provider(resolved)
+        hub = Hub(
+            resolved.redis_url,
+            max_per_user=resolved.sse_max_conn_per_user,
+            max_total=resolved.sse_max_conn_per_instance,
+        )
+        await hub.start()
+        app.state.hub = hub
         try:
             yield
         finally:
+            await hub.close()
             await redis.aclose()
             await engine.dispose()
 
@@ -55,6 +69,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     app.include_router(appointments.router, prefix="/v1")
     app.include_router(queues.router, prefix="/v1")
     app.include_router(tokens.router, prefix="/v1")
+    app.include_router(streams.router, prefix="/v1")
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

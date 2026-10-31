@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import InvalidTransition, NotFound, ValidationFailed
 from app.core.timezones import get_zone
 from app.models import Appointment, Business, BusinessMember, Service, User
+from app.realtime.outbox import emit_event
 from app.schemas.appointment import (
     AppointmentOut,
     AppointmentPage,
@@ -60,6 +61,14 @@ async def cancel_appointment(
                 entity_id=appointment_id,
                 data={"customer_id": str(cancelled.customer_id)},
             )
+        await emit_event(
+            session,
+            business_id=cancelled.business_id,
+            queue_id=None,
+            event_type="appointment.cancelled",
+            payload={"appointment_id": str(appointment_id), "status": "cancelled"},
+            at=now,
+        )
         await session.commit()
         return
     status = await session.scalar(

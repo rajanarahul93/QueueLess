@@ -8,6 +8,7 @@ Any 500 fails a test.
 """
 
 import asyncio
+import time
 import uuid
 from collections import Counter
 from collections.abc import Iterator
@@ -142,9 +143,13 @@ async def test_five_hundred_joins_number_exactly_one_to_five_hundred(
         _, queue = await fresh_queue(api)
         heads = await customers(api, 500)
         load = Load()
+        started = time.perf_counter()
         with measured(api, load) as states:
             await asyncio.gather(*(tracked(load, join(api, h, queue)) for h in heads))
+        elapsed_ms = (time.perf_counter() - started) * 1000
         report(capsys, f"500 joins run {run + 1}", api, load, states)
+        with capsys.disabled():
+            print(f"  join burst wall-clock: {elapsed_ms:.0f} ms")
         assert load.statuses == {"201": 500}
         nos, last = await numbers(api, queue)
         assert nos == list(range(1, 501)) and last == 500

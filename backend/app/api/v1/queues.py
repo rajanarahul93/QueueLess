@@ -67,9 +67,14 @@ async def snapshot(found: MemberQueue, session: SessionDep) -> SnapshotOut:
     ],
 )
 async def set_status(
-    queue_id: uuid.UUID, body: QueueStatusIn, user: CurrentUser, session: SessionDep
+    queue_id: uuid.UUID,
+    body: QueueStatusIn,
+    user: CurrentUser,
+    session: SessionDep,
+    clock: ClockDep,
 ) -> QueueOut:
-    return await queue_service.set_queue_status(session, queue_id, user.user_id, body.status)
+    now = datetime.fromtimestamp(clock(), UTC)
+    return await queue_service.set_queue_status(session, queue_id, user.user_id, body.status, now)
 
 
 async def existing_queue(queue_id: uuid.UUID, session: SessionDep) -> None:

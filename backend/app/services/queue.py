@@ -17,7 +17,6 @@ from sqlalchemy import (
     func,
     or_,
     select,
-    text,
     tuple_,
     update,
 )
@@ -50,6 +49,7 @@ from app.models import (
     ServiceSession,
     User,
 )
+from app.realtime.outbox import emit_event, emit_token_event, lock_queue_events
 from app.schemas.queue import (
     ActiveTokenOut,
     QueueOut,
@@ -361,6 +361,61 @@ def _token_out(row: Row[QueueToken, date, str, str, int | None]) -> ActiveTokenO
     )
 
 
+def active_tokens_with_ahead(queue_id: uuid.UUID) -> Select[uuid.UUID, int, str, int | None]:
+    """Every active token of a queue with its waiting-ahead count: one query for a whole queue."""
+    return select(
+        QueueToken.id,
+        QueueToken.token_no,
+        QueueToken.status,
+        _ahead_count().label("ahead"),
+    ).where(QueueToken.queue_id == queue_id, QueueToken.status.in_(ACTIVE_TOKEN_STATUSES))
+
+
+async def board(session: AsyncSession, queue_id: uuid.UUID) -> dict[str, list[int]]:
+    """The public board: token numbers only (FR-35). Now serving, and the next five in the
+    order call-next will follow."""
+    settings = await session.scalar(
+        select(Business.settings)
+        .join(Queue, Queue.business_id == Business.id)
+        .where(Queue.id == queue_id)
+    )
+    tokens = list(
+        (
+            await session.scalars(
+                select(QueueToken)
+                .where(
+                    QueueToken.queue_id == queue_id,
+                    QueueToken.status.in_(ACTIVE_TOKEN_STATUSES),
+                )
+                .order_by(*base_order())
+            )
+        ).all()
+    )
+    walk_ins, appointments = ratio(
+        settings or {"walk_in_ratio": {"walk_ins": 1, "appointments": 2}}
+    )
+    history = [
+        source
+        for source, _ in (
+            await session.execute(history_query(queue_id, walk_ins + appointments))
+        ).all()
+    ]
+    waiting = [token for token in tokens if token.status == "waiting"]
+    upcoming = call_order(waiting, history, walk_ins, appointments)[:5]
+    return {
+        "now_serving": sorted(t.token_no for t in tokens if t.status in ("called", "in_service")),
+        "next": [token.token_no for token in upcoming],
+    }
+
+
+async def own_token(session: AsyncSession, token_id: uuid.UUID, customer_id: uuid.UUID) -> TokenOut:
+    """The customer's own token; anyone else's is the same 404 as a missing id."""
+    owner = await session.scalar(select(QueueToken.customer_id).where(QueueToken.id == token_id))
+    if owner != customer_id:
+        raise NotFound("Token not found")
+    return await _read_token(session, token_id)
+
+
 async def _read_token(session: AsyncSession, token_id: uuid.UUID) -> TokenOut:
     row = (await session.execute(_token_query().where(QueueToken.id == token_id))).one()
     return TokenOut.model_validate(_token_out(row).model_dump())
@@ -458,6 +513,7 @@ async def join_queue(
     except _DuplicateToken:
         await session.rollback()  # the number goes back with the rest
         raise AlreadyInQueue("You already have a token in this queue") from None
+    await emit_token_event(session, token_id, "token.joined", now)
     await session.commit()
     return await _read_token(session, token_id)
 
@@ -537,6 +593,7 @@ async def check_in(
             entity_id=appointment.id,
             data={"token_id": str(token_id)},
         )
+    await emit_token_event(session, token_id, "token.joined", now)
     await session.commit()
     return await _read_token(session, token_id), True
 
@@ -563,6 +620,10 @@ async def leave_queue(
     if token.status == "cancelled":
         return  # leaving twice is a no-op
     change = transition(token.status, "cancel", skip_count=token.skip_count, now=now)
+    if token.appointment_id is not None:  # global lock order: the appointment before the token
+        await session.execute(
+            select(Appointment.id).where(Appointment.id == token.appointment_id).with_for_update()
+        )
     moved = (
         await session.execute(
             update(QueueToken)
@@ -583,11 +644,12 @@ async def leave_queue(
             .where(Appointment.id == moved.appointment_id)
             .values(status="cancelled")
         )
+    await emit_token_event(session, token_id, "token.cancelled", now, reason="left")
     await session.commit()
 
 
 async def set_queue_status(
-    session: AsyncSession, queue_id: uuid.UUID, actor_id: uuid.UUID, status: str
+    session: AsyncSession, queue_id: uuid.UUID, actor_id: uuid.UUID, status: str, now: datetime
 ) -> QueueOut:
     """open <-> paused, open or paused -> closed; closed is final for the day."""
     queue, _ = await _lock_queue(session, queue_id)
@@ -605,6 +667,7 @@ async def set_queue_status(
             entity_id=queue_id,
             data={"from": old, "to": status},
         )
+        await emit_queue_status(session, queue, old, status, now)
         queue.status = status
     await session.commit()
     return QueueOut.model_validate(queue)
@@ -658,13 +721,11 @@ async def call_next(
     business = await get_business(session, queue.business_id)
     if queue.queue_date != now.astimezone(get_zone(business.timezone)).date():
         raise QueueClosed("This is not today's queue")
-    # why raw SQL: SQLAlchemy has no construct for advisory locks. The lock makes the ratio
-    # decision and the pick one-at-a-time per queue (two calls cannot both decide it is a
-    # walk-in's turn); joins, status changes and other queues never take it. It is held until
-    # commit. Lock order: this lock, then the token row (SKIP LOCKED); nothing takes them reversed.
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(:key)"), {"key": queue_lock_key(queue_id)}
-    )
+    # The queue's event lock, taken FIRST here and held until commit, makes the ratio decision
+    # and the pick one-at-a-time per queue. Every other writer of the queue takes it last, just
+    # before its outbox row; this path then only takes token rows with SKIP LOCKED, which never
+    # waits, so no lock cycle is possible.
+    await lock_queue_events(session, queue_id)
     token, last_called = await _pick(session, queue_id, ratio(business.settings))
     if token is None:
         return None
@@ -679,15 +740,9 @@ async def call_next(
         .values(**change.values, version=token.version + 1)
     )
     _audit(session, token, actor_id, "token.call")
+    await emit_token_event(session, token.id, "token.called", now)
     await session.commit()
     return await staff_token(session, token.id)
-
-
-def queue_lock_key(queue_id: uuid.UUID) -> int:
-    """A signed 64-bit key from the queue id's first 8 bytes. Queue ids are random UUIDs, so two
-    queues sharing a key is vanishingly rare, and would only make their calls wait, never
-    corrupt anything. No other advisory lock exists in the app."""
-    return int.from_bytes(queue_id.bytes[:8], "big", signed=True)
 
 
 async def _pick(
@@ -855,7 +910,31 @@ async def apply_event(
     extra = {"reason": reason} if reason else {}
     at = now if actor_id is None else None  # job rows carry the job's clock
     _audit(session, token, actor_id, action or f"token.{event}", at, status=change.status, **extra)
+    await emit_token_event(session, token.id, EVENT_TYPES[change.status], now, **extra)
     await session.commit()
+
+
+# Event type for each status a staff action or job can produce.
+EVENT_TYPES = {
+    "in_service": "token.started",
+    "completed": "token.completed",
+    "waiting": "token.skipped",
+    "no_show": "token.no_show",
+    "cancelled": "token.cancelled",
+}
+
+
+async def emit_queue_status(
+    session: AsyncSession, queue: Queue, old: str, new: str, now: datetime, **extra: object
+) -> None:
+    await emit_event(
+        session,
+        business_id=queue.business_id,
+        queue_id=queue.id,
+        event_type="queue.status_changed",
+        payload={"queue_id": str(queue.id), "from": old, "to": new, **extra},
+        at=now,
+    )
 
 
 APPOINTMENT_STATUS = {
@@ -919,6 +998,7 @@ async def set_priority(
     actor_id: uuid.UUID,
     priority: int,
     version: int,
+    now: datetime,
 ) -> SnapshotToken:
     """Waiting tokens only; the same value is a no-op (no version bump, no audit row)."""
     token = await _read_for_change(session, token_id, version)
@@ -927,6 +1007,7 @@ async def set_priority(
     if token.priority != priority:
         await _apply(session, token, {"priority": priority})
         _audit(session, token, actor_id, "token.priority", old=token.priority, new=priority)
+        await emit_token_event(session, token_id, "token.priority_changed", now)
         await session.commit()
     return await staff_token(session, token_id)
 

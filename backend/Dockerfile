@@ -9,4 +9,5 @@ COPY . .
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 USER 10001
 # One image, two processes: the default runs the API; the worker service overrides the command.
-CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# Open SSE streams never finish on their own: give them 10 s on shutdown, then close them.
+CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]
