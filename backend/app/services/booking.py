@@ -24,6 +24,7 @@ from app.core.timezones import get_zone
 from app.db.errors import driver_error
 from app.models import Appointment, Business, Resource, Service, User
 from app.models.appointment import ACTIVE_STATUSES
+from app.realtime.outbox import emit_event
 from app.schemas.appointment import AppointmentOut, AvailabilityOut, SlotOut
 from app.services.queue import default_resource
 
@@ -337,7 +338,21 @@ async def _book_once(
             update(Appointment).where(Appointment.id == replaces).values(status="rescheduled")
         )
     row = await _insert(session, customer_id, target, replaces)
-    # Phase 4: the outbox event for a booking or reschedule is written here, before the commit.
+    await emit_event(
+        session,
+        business_id=service.business_id,
+        queue_id=None,  # appointments have no queue: no ordering guarantee, no stream yet
+        event_type="appointment.rescheduled" if replaces else "appointment.booked",
+        payload={
+            "appointment_id": str(row.id),
+            "status": "booked",
+            "service_id": str(service.id),
+            "resource_id": str(target.resource.id),
+            "start": target.start.isoformat(),
+            **({"rescheduled_from_id": str(replaces)} if replaces else {}),
+        },
+        at=now,
+    )
     await session.commit()
     zone = get_zone(target.business.timezone)
     return AppointmentOut(

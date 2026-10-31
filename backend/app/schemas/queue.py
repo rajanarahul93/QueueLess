@@ -83,6 +83,11 @@ class TokenOut(BaseModel):
     ahead_count: int | None
 
 
+class TokenWithStreamOut(TokenOut):
+    stream_token: str  # opens GET /v1/tokens/{id}/stream; short-lived
+    expires_in: int
+
+
 class ActiveTokenOut(TokenOut):
     business_id: uuid.UUID
     queue_date: date

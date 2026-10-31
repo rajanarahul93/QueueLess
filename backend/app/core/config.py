@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=10, gt=0)
     booking_rate_limit_per_hour: int = Field(default=20, gt=0)
     join_rate_limit_per_hour: int = Field(default=20, gt=0)
+    sse_heartbeat_sec: int = Field(default=15, gt=0)
+    sse_max_conn_per_user: int = Field(default=5, gt=0)
+    sse_max_conn_per_instance: int = Field(default=1000, gt=0)
+    sse_max_stream_sec: int = Field(default=1800, gt=0)  # hard cap; the client reconnects
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -55,6 +59,8 @@ class Settings(BaseSettings):
             raise ValueError("jwt_secret and stream_token_secret must differ")
         if "*" in self.cors_origins:
             raise ValueError("cors_origins must list exact origins, not *")
+        if self.sse_max_stream_sec < 2 * self.sse_heartbeat_sec:
+            raise ValueError("sse_max_stream_sec must be at least twice sse_heartbeat_sec")
         if self.otp_provider == "mock" and self.app_env == "production":
             raise ValueError("otp_provider mock is not allowed in production")
         return self

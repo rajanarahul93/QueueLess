@@ -139,3 +139,24 @@ def test_join_rate_limit_default_and_validation() -> None:
     for bad in (0, -1):
         with pytest.raises(ValidationError):
             make_settings(join_rate_limit_per_hour=bad)
+
+
+def test_stream_settings_defaults_and_validation() -> None:
+    settings = make_settings()
+    assert (
+        settings.sse_heartbeat_sec,
+        settings.sse_max_conn_per_user,
+        settings.sse_max_conn_per_instance,
+        settings.sse_max_stream_sec,
+    ) == (15, 5, 1000, 1800)
+    for name in (
+        "sse_heartbeat_sec",
+        "sse_max_conn_per_user",
+        "sse_max_conn_per_instance",
+        "sse_max_stream_sec",
+    ):
+        with pytest.raises(ValidationError):
+            make_settings(**{name: 0})
+    with pytest.raises(ValidationError, match="at least twice"):
+        make_settings(sse_heartbeat_sec=20, sse_max_stream_sec=39)
+    assert make_settings(sse_heartbeat_sec=20, sse_max_stream_sec=40).sse_max_stream_sec == 40
