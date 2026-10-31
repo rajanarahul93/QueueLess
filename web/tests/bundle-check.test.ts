@@ -24,7 +24,7 @@ describe("the per-route bundle check", () => {
   });
 
   it("applies the 200 KB budget to customer routes only", () => {
-    expect(["/", "/login", "/me", "/b", "/b/[id]", "/b/[id]/book"].every(isCustomerRoute)).toBe(true);
+    expect(["/", "/login", "/me", "/me/reschedule/[id]", "/ticket", "/b", "/b/[id]", "/b/[id]/book"].every(isCustomerRoute)).toBe(true);
     expect(["/owner", "/console", "/signin", "/register", "/bx"].some(isCustomerRoute)).toBe(false);
   });
 });

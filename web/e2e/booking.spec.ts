@@ -1,9 +1,9 @@
-import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { addDays, dayButtonName, dayLabel, localToday } from "../lib/time";
 import { ACCOUNTS_FILE } from "./global-setup";
 import { API_URL, otpCodeFor, restrictBooking, uniquePhone } from "./local-stack";
+import { countUntitled, expectTitle, noAxeViolations } from "./page-checks";
 
 // Browse and book against the Kolkata booking business, in a Los Angeles browser (config).
 // Two customers per browser project (2 OTP sign-ins); each project books its own day.
@@ -11,11 +11,6 @@ test.describe.configure({ mode: "serial" });
 
 type Booking = { id: string; name: string; service: string };
 const booking = (): Booking => JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).booking;
-
-async function noAxeViolations(page: Page, screen: string) {
-  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-  expect(results.violations.map((violation) => `${screen}: ${violation.id}`)).toEqual([]);
-}
 
 /** Signs in on the login page the app sent us to; returns the phone used. */
 async function signInWithOtp(page: Page): Promise<string> {
@@ -36,21 +31,9 @@ let a: BrowserContext;
 let b: BrowserContext;
 let phoneB: string;
 
-/** Counts the moments the loaded page had no title (a remounted <title> leaves the tab untitled). */
-function countUntitled() {
-  addEventListener("DOMContentLoaded", () => {
-    const counter = window as unknown as { untitled: number };
-    counter.untitled = 0;
-    new MutationObserver(() => {
-      if (!document.title) counter.untitled += 1;
-    }).observe(document.head, { subtree: true, childList: true, characterData: true });
-  });
-}
-
 /** After a client-side navigation the Book page still has its own title, and never lost it. */
 async function expectBookTitle(page: Page) {
-  await expect(page).toHaveTitle(`Book at ${booking().name} · QueueLess`);
-  expect(await page.evaluate(() => (window as unknown as { untitled: number }).untitled)).toBe(0);
+  await expectTitle(page, `Book at ${booking().name} · QueueLess`);
 }
 
 async function pickDay(page: Page) {

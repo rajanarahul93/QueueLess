@@ -18,13 +18,17 @@ const DAYS = [
   ["sun", "Sunday"],
 ] as const;
 
-export function useBusiness(id: string) {
-  return useQuery({
+export function businessQuery(id: string) {
+  return {
     queryKey: ["business", id],
     queryFn: () => api<Business>(`/v1/businesses/${id}`, { auth: false }),
     staleTime: 60_000,
     retry: false,
-  });
+  };
+}
+
+export function useBusiness(id: string) {
+  return useQuery(businessQuery(id));
 }
 
 export function useServices(id: string) {

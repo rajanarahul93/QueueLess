@@ -42,6 +42,26 @@ export function restrictBooking(phone: string): void {
   );
 }
 
+/** Inserts appointments copied from `like` (same business, service and resource; the same
+ *  customer, or another user when `otherCustomer`), 30 minutes each, at `starts`, with `status`.
+ *  Returns their ids. Past, checked-in and someone else's appointments cannot be made through
+ *  the API, so the tests write them here (local only). */
+export function insertAppointments(like: string, status: string, starts: Date[], otherCustomer = false): string[] {
+  requireLocal();
+  if (!/^[0-9a-f-]{36}$/.test(like) || !/^[a-z_]+$/.test(status)) throw new Error("bad appointment input");
+  const times = starts.map((start) => `'${start.toISOString()}'`).join(",");
+  const customer = otherCustomer ? "(SELECT id FROM users WHERE id <> a.customer_id ORDER BY created_at LIMIT 1)" : "a.customer_id";
+  const sql =
+    "INSERT INTO appointments (business_id, service_id, resource_id, customer_id, during, status) " +
+    `SELECT a.business_id, a.service_id, a.resource_id, ${customer}, tstzrange(s.at, s.at + interval '30 minutes'), '${status}' ` +
+    `FROM appointments a, unnest(ARRAY[${times}]::timestamptz[]) AS s(at) WHERE a.id = '${like}' RETURNING id`;
+  const out = compose(
+    "exec", "-T", "postgres", "sh", "-c",
+    `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -qtA -v ON_ERROR_STOP=1 -c "${sql}"`,
+  );
+  return out.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 /** The OTP the mock SMS provider logged for a phone ending in `last4` (the API only runs the
  *  mock with APP_ENV local or test, and logs the last four digits only). */
 export async function otpCodeFor(last4: string, since: Date): Promise<string> {

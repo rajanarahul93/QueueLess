@@ -51,9 +51,31 @@ export default async function globalSetup() {
     { name: "Checkup", duration_min: 30, buffer_min: 0, price: "250.00" },
     token,
   );
+  // A business whose appointments cannot be moved within 7 days of their start (the maximum).
+  const strict = await post(
+    "/v1/businesses",
+    { name: `E2E Cutoff ${stamp}`, category: "clinic", timezone: "Asia/Kolkata", open_hours: morning },
+    token,
+  );
+  const strictService = await post(
+    `/v1/businesses/${strict.id}/services`,
+    { name: "Checkup", duration_min: 30, buffer_min: 0, price: "250.00" },
+    token,
+  );
+  const patched = await fetch(`${API_URL}/v1/businesses/${strict.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ settings: { reschedule_cutoff_min: 10080 } }),
+  });
+  if (!patched.ok) throw new Error(`cutoff settings: ${patched.status} ${await patched.text()}`);
   mkdirSync(join(__dirname, ".state"), { recursive: true });
   writeFileSync(
     ACCOUNTS_FILE,
-    JSON.stringify({ owner, staff, booking: { id: clinic.id, name: clinic.name, service: service.id } }),
+    JSON.stringify({
+      owner,
+      staff,
+      booking: { id: clinic.id, name: clinic.name, service: service.id },
+      cutoff: { id: strict.id, name: strict.name, service: strictService.id },
+    }),
   );
 }

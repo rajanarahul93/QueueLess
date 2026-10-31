@@ -1,8 +1,8 @@
-import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { ACCOUNTS_FILE } from "./global-setup";
 import { otpCodeFor, uniquePhone } from "./local-stack";
+import { noAxeViolations } from "./page-checks";
 
 // One serial chain per browser project. Each role signs in once and its later tests reuse that
 // live context: refresh tokens rotate, so a saved login reused by several tests would trip the
@@ -11,13 +11,6 @@ test.describe.configure({ mode: "serial" });
 
 type Accounts = { owner: { email: string; password: string }; staff: { email: string; password: string } };
 const accounts = (): Accounts => JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8"));
-
-async function noAxeViolations(page: Page, screen: string) {
-  const results = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-    .analyze();
-  expect(results.violations.map((violation) => `${screen}: ${violation.id}`)).toEqual([]);
-}
 
 let customer: BrowserContext;
 
@@ -50,14 +43,14 @@ test("a customer signs in with a phone OTP read from the API log", async ({ brow
   await page.getByLabel("Digit 1").click();
   await page.keyboard.type(code); // the sixth digit submits
   await expect(page).toHaveURL(/\/me$/);
-  await expect(page.getByRole("heading", { name: /Signed in as/ })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "My appointments" })).toBeVisible();
   await noAxeViolations(page, "/me");
 });
 
 test("a reload keeps the session (silent refresh from the cookie)", async () => {
   const page = customer.pages()[0];
   await page.reload();
-  await expect(page.getByRole("heading", { name: /Signed in as/ })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "My appointments" })).toBeVisible();
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
   expect(stored).not.toMatch(/eyJ/); // no JWT in web storage
 });
@@ -79,13 +72,13 @@ test("two tabs refreshing at once stay signed in (no reuse, no logout)", async (
   }
   await Promise.all([first.goto("/me"), second.goto("/me")]);
   for (const page of [first, second]) {
-    await expect(page.getByRole("heading", { name: /Signed in as/ })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "My appointments" })).toBeVisible();
   }
   expect(refreshes.length).toBeGreaterThan(0);
   expect(refreshes.every((status) => status === "200")).toBe(true);
   await customer.unrouteAll({ behavior: "wait" }); // let a held refresh finish first
   await first.reload(); // the cookie the two tabs left behind still works
-  await expect(first.getByRole("heading", { name: /Signed in as/ })).toBeVisible();
+  await expect(first.getByRole("heading", { level: 1, name: "My appointments" })).toBeVisible();
 });
 
 test("a customer opening an owner or staff route is blocked", async () => {
@@ -101,7 +94,7 @@ test("signing out in one tab signs out the other", async () => {
   const [first, second] = customer.pages();
   await first.goto("/me");
   await second.goto("/me");
-  await expect(second.getByRole("heading", { name: /Signed in as/ })).toBeVisible();
+  await expect(second.getByRole("heading", { level: 1, name: "My appointments" })).toBeVisible();
   await first.getByRole("button", { name: "Sign out" }).click();
   await expect(second).toHaveURL(/\/login\?next=%2Fme$/);
   await second.reload();
