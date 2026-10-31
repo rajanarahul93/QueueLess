@@ -1,3 +1,5 @@
+from typing import Any
+
 import httpx
 import jwt
 import pytest
@@ -5,7 +7,9 @@ from sqlalchemy import select, update
 
 from app.core.security import hash_password
 from app.models import RefreshToken, User
-from tests.integration.api import ORIGIN, Api, new_email, open_api
+from tests.integration.api import ORIGIN, Api, new_email, new_phone, open_api
+from tests.integration.test_businesses import user_headers
+from tests.integration.test_idempotency import create
 
 pytestmark = pytest.mark.anyio
 
@@ -224,3 +228,32 @@ async def test_actual_responses_carry_cors_headers_only_for_the_allowed_origin(a
     foreign = await api.client.get("/healthz", headers={"Origin": "http://evil.test"})
     assert "access-control-allow-origin" not in foreign.headers
     assert "access-control-allow-origin" not in (await api.client.get("/healthz")).headers
+
+
+def exposed(response: Any) -> set[str]:
+    raw = response.headers.get("access-control-expose-headers", "")
+    return {name.strip().lower() for name in raw.split(",") if name.strip()}
+
+
+async def test_cors_exposes_retry_after_and_the_replay_header(api: Api) -> None:
+    phone = new_phone()
+    assert (await api.request_otp(phone)).status_code == 202
+    cooldown = await api.client.post(
+        "/v1/auth/otp/request", json={"phone": phone}, headers={"Origin": ORIGIN}
+    )
+    assert cooldown.status_code == 429 and "retry-after" in cooldown.headers
+    assert cooldown.headers["access-control-allow-origin"] == ORIGIN
+    assert exposed(cooldown) == {"retry-after", "idempotent-replayed"}
+    _, owner = await user_headers(api, "owner")
+    replayed = None
+    for _ in range(2):
+        replayed = await create(api, owner | {"Origin": ORIGIN})
+    assert replayed is not None and replayed.headers["Idempotent-Replayed"] == "true"
+    assert exposed(replayed) == {"retry-after", "idempotent-replayed"}
+    foreign = await api.client.post(
+        "/v1/auth/otp/request", json={"phone": phone}, headers={"Origin": "http://evil.test"}
+    )
+    assert foreign.status_code == 429
+    # Starlette adds its fixed CORS headers to every response; without Allow-Origin the browser
+    # gives a foreign page nothing of the response, these headers included.
+    assert "access-control-allow-origin" not in foreign.headers
