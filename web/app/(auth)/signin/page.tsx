@@ -6,6 +6,7 @@ import { Suspense, useState, type FormEvent } from "react";
 import { Alert } from "@/components/Alert";
 import { Button } from "@/components/Button";
 import { TextField } from "@/components/TextField";
+import { Form } from "@/components/Form";
 import { errorMessage } from "@/lib/api/errors";
 import { homeFor, safeNext, signIn } from "@/lib/auth/actions";
 
@@ -32,7 +33,7 @@ function EmailSignIn() {
   return (
     <section className="mx-auto max-w-[480px] px-4 py-8">
       <h1 className="text-h1 font-semibold">Staff and owner sign in</h1>
-      <form onSubmit={onSubmit} className="mt-6 space-y-4">
+      <Form onSubmit={onSubmit} className="mt-6 space-y-4">
         <TextField id="email" name="email" label="Email" type="email" autoComplete="email" required />
         <TextField
           id="password"
@@ -46,7 +47,7 @@ function EmailSignIn() {
         <Button type="submit" loading={busy} className="w-full">
           Sign in
         </Button>
-      </form>
+      </Form>
       <p className="mt-6 text-body text-muted">
         New business?{" "}
         <Link href="/register" className="text-primary underline">
