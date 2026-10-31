@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { Alert } from "@/components/Alert";
 import { Button } from "@/components/Button";
 import { TextField } from "@/components/TextField";
+import { Form } from "@/components/Form";
 import { errorMessage, invalidFields } from "@/lib/api/errors";
 import { registerOwner } from "@/lib/auth/actions";
 
@@ -42,7 +43,7 @@ export default function RegisterPage() {
     <section className="mx-auto max-w-[480px] px-4 py-8">
       <title>Create an owner account · QueueLess</title>
       <h1 className="text-h1 font-semibold">Create an owner account</h1>
-      <form onSubmit={onSubmit} className="mt-6 space-y-4">
+      <Form onSubmit={onSubmit} className="mt-6 space-y-4">
         <TextField id="name" name="name" label="Your name" autoComplete="name" required maxLength={100} />
         <TextField
           id="email"
@@ -67,7 +68,7 @@ export default function RegisterPage() {
         <Button type="submit" loading={busy} className="w-full">
           Create account
         </Button>
-      </form>
+      </Form>
     </section>
   );
 }

@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, type FormEvent } from "react";
 import { Alert } from "@/components/Alert";
 import { DelayedSkeleton } from "@/components/booking/DelayedSkeleton";
+import { Form } from "@/components/Form";
 import { api, ApiError } from "@/lib/api/client";
 import { errorMessage } from "@/lib/api/errors";
 import type { BusinessPage } from "@/lib/api/types";
@@ -56,7 +57,7 @@ export function BusinessSearch() {
   const items = results.data?.pages.flatMap((page) => page.items) ?? [];
   return (
     <>
-      <form role="search" onSubmit={onSearch} className="mt-6 space-y-3">
+      <Form role="search" onSubmit={onSearch} className="mt-6 space-y-3">
         <div>
           <label htmlFor="q" className="block text-label font-medium">
             Name
@@ -74,7 +75,7 @@ export function BusinessSearch() {
         <button type="submit" className="min-h-12 w-full rounded-md bg-primary px-4 text-label font-medium text-primary-fg">
           Search
         </button>
-      </form>
+      </Form>
 
       <div className="mt-8" aria-live="polite">
         {results.isPending && <DelayedSkeleton rows={3} />}

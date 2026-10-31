@@ -5,6 +5,7 @@ import { Suspense, useState, type FormEvent } from "react";
 import { Alert } from "@/components/Alert";
 import { Button } from "@/components/Button";
 import { OtpInput } from "@/components/OtpInput";
+import { Form } from "@/components/Form";
 import { ApiError } from "@/lib/api/client";
 import { errorMessage } from "@/lib/api/errors";
 import { homeFor, requestOtp, safeNext, verifyOtp } from "@/lib/auth/actions";
@@ -69,7 +70,7 @@ function PhoneLogin() {
     <section className="mx-auto max-w-[480px] px-4 py-8">
       <h1 className="text-h1 font-semibold">Sign in with your phone</h1>
       {!phone ? (
-        <form onSubmit={onSend} noValidate className="mt-6 space-y-4">
+        <Form onSubmit={onSend} noValidate className="mt-6 space-y-4">
           <div>
             <label htmlFor="country" className="block text-label font-medium">
               Country code
@@ -107,7 +108,7 @@ function PhoneLogin() {
           <Button type="submit" loading={busy} disabled={wait > 0} className="w-full">
             {wait > 0 ? `Send code (wait ${wait} s)` : "Send code"}
           </Button>
-        </form>
+        </Form>
       ) : (
         <div className="mt-6 space-y-4">
           <p className="text-body text-muted">
