@@ -1,15 +1,27 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import { connection } from "next/server";
 import type { ReactNode } from "react";
+import { Header } from "@/components/Header";
 import "./globals.css";
 import { Providers } from "./providers";
 
+// Variable font, Latin subset, self-hosted by next/font at build time.
+const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-inter" });
+
 export const metadata: Metadata = { title: "QueueLess" };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  // Rendered per request so Next can put the proxy's CSP nonce on its scripts (report-only
+  // for now; the cost of this is measured before the policy is enforced).
+  await connection();
   return (
-    <html lang="en">
-      <body>
-        <Providers>{children}</Providers>
+    <html lang="en" className={inter.variable} suppressHydrationWarning>
+      <body className="min-h-screen font-sans antialiased">
+        <Providers>
+          <Header />
+          <main>{children}</main>
+        </Providers>
       </body>
     </html>
   );
