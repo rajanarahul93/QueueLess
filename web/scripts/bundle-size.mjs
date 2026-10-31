@@ -1,46 +1,52 @@
-// Initial client JavaScript of the customer routes, gzipped: every script the server-rendered
-// HTML loads or preloads. Fails over the 200 KB budget. Run after `next build`; it starts
-// `next start` on a spare port. Chunks fetched later on demand are not counted.
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+// Initial client JavaScript per route, gzipped, from Next's build manifests (no server): the
+// root main files plus every entry file in the route's client manifest. The polyfill chunk is
+// left out: it is loaded with noModule, which the supported browsers skip. Run after
+// `next build`. `--write-baseline` rewrites bundle-baseline.json (commit it as a reviewed change).
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { evaluate } from "./bundle-check.mjs";
 
-const BUDGET_KB = 200;
-const ROUTES = ["/", "/login"]; // the customer routes that exist so far
-const PORT = 3123;
-const server = spawn("npx", ["next", "start", "-p", String(PORT)], { stdio: "ignore" });
+const NEXT = ".next";
+const BASELINE = "bundle-baseline.json";
+const build = JSON.parse(readFileSync(join(NEXT, "build-manifest.json"), "utf8"));
+const polyfills = new Set(build.polyfillFiles);
 
-async function html(path) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      const response = await fetch(`http://localhost:${PORT}${path}`);
-      if (response.ok) return response.text();
-    } catch {
-      // not listening yet
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
+function* manifests(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) yield* manifests(path);
+    else if (entry.name === "page_client-reference-manifest.js") yield path;
   }
-  throw new Error(`${path} did not load`);
 }
 
-let failed = false;
-try {
-  for (const route of ROUTES) {
-    const page = await html(route);
-    const urls = new Set(
-      [...page.matchAll(/(?:src|href)="(\/_next\/static\/[^"]+\.js)"/g)].map((match) => match[1]),
-    );
-    let total = 0;
-    for (const url of [...urls].sort()) {
-      const bytes = gzipSync(readFileSync(`.next${url.replace("/_next", "")}`)).length;
-      total += bytes;
-      console.log(`  ${(bytes / 1024).toFixed(1).padStart(6)} KB  ${url}`);
-    }
-    const kb = total / 1024;
-    console.log(`${route}: ${urls.size} scripts, ${kb.toFixed(1)} KB gzipped (budget ${BUDGET_KB} KB)`);
-    if (kb > BUDGET_KB) failed = true;
-  }
-} finally {
-  server.kill();
+/** "/(auth)/login/page" -> "/login"; "/page" -> "/". Route groups do not appear in URLs. */
+function routeOf(key) {
+  const parts = key.split("/").filter((part) => part && part !== "page" && !/^\(.*\)$/.test(part));
+  return `/${parts.join("/")}`;
 }
-process.exit(failed ? 1 : 0);
+
+const sizes = {};
+for (const path of manifests(join(NEXT, "server", "app"))) {
+  const source = readFileSync(path, "utf8");
+  const key = /__RSC_MANIFEST\["([^"]+)"\]/.exec(source)[1];
+  const route = routeOf(key);
+  if (route.startsWith("/_")) continue; // Next's own error pages
+  const entries = JSON.parse(/"entryJSFiles":(\{[^}]*\})/.exec(source)[1]);
+  const files = new Set([...build.rootMainFiles, ...Object.values(entries).flat()]);
+  let bytes = 0;
+  for (const file of files) {
+    if (!polyfills.has(file)) bytes += gzipSync(readFileSync(join(NEXT, file))).length;
+  }
+  sizes[route] = Math.round((bytes / 1024) * 10) / 10;
+}
+
+if (process.argv.includes("--write-baseline")) {
+  writeFileSync(BASELINE, `${JSON.stringify(sizes, Object.keys(sizes).sort(), 2)}\n`);
+  console.log(`wrote ${BASELINE}`);
+}
+const { lines, failures } = evaluate(sizes, JSON.parse(readFileSync(BASELINE, "utf8")));
+console.log("Initial JS per route, gzipped (polyfills for old browsers excluded):");
+lines.forEach((line) => console.log(`  ${line}`));
+failures.forEach((failure) => console.error(`FAIL ${failure}`));
+process.exit(failures.length ? 1 : 0);

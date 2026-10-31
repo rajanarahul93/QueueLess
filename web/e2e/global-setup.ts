@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { API_URL, clearRateLimits } from "./local-stack";
 
 export const ACCOUNTS_FILE = join(__dirname, ".state", "accounts.json");
-const PASSWORD = `e2e-${crypto.randomUUID()}`; // a throwaway account per run
 
 async function post(path: string, body: unknown, token?: string) {
   const response = await fetch(`${API_URL}${path}`, {
@@ -20,7 +19,8 @@ async function post(path: string, body: unknown, token?: string) {
 export default async function globalSetup() {
   clearRateLimits();
   const stamp = Date.now();
-  const owner = { email: `e2e-owner-${stamp}@example.test`, password: PASSWORD };
+  // Throwaway accounts: a fresh random password each run, kept only in the ignored state file.
+  const owner = { email: `e2e-owner-${stamp}@example.test`, password: crypto.randomUUID() };
   await post("/v1/auth/register", { name: "E2E Owner", ...owner });
   const { access_token: token } = await post("/v1/auth/login", owner);
   const everyDay = Object.fromEntries(
@@ -31,10 +31,10 @@ export default async function globalSetup() {
     { name: "E2E Clinic", category: "clinic", timezone: "Asia/Kolkata", open_hours: everyDay },
     token,
   );
-  const staff = { email: `e2e-staff-${stamp}@example.test`, password: PASSWORD };
+  const staff = { email: `e2e-staff-${stamp}@example.test`, password: crypto.randomUUID() };
   await post(
     `/v1/businesses/${business.id}/staff`,
-    { name: "E2E Staff", email: staff.email, initial_password: PASSWORD },
+    { name: "E2E Staff", email: staff.email, initial_password: staff.password },
     token,
   );
   mkdirSync(join(__dirname, ".state"), { recursive: true });

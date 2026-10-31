@@ -52,6 +52,8 @@ jobs:
       - run: npm run bundle-size
 
   # Informational: not a required check until it has been green on main ten times in a row.
+  # The same script runs locally (`web/scripts/e2e-stack.sh --fresh`); its step times go to the
+  # job summary.
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -60,8 +62,6 @@ jobs:
         run: |
           cp .env.example .env
           sed -i "s/^POSTGRES_USER=.*/POSTGRES_USER=queueless/; s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/; s/^POSTGRES_DB=.*/POSTGRES_DB=queueless/" .env
-      - run: docker compose up -d --build --wait
-      - run: docker compose run --rm api alembic upgrade head
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -71,7 +71,6 @@ jobs:
         working-directory: web
       - run: npx playwright install --with-deps chromium firefox webkit
         working-directory: web
-      - run: npx playwright test
-        working-directory: web
+      - run: web/scripts/e2e-stack.sh --fresh
       - if: failure()
-        run: docker compose logs --no-color api web
+        run: docker compose logs --no-color api worker web

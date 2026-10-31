@@ -8,13 +8,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Only so the app factory can build its settings: nothing connects, values are thrown away.
+const throwaway = ["JWT_SECRET", "STREAM_TOKEN_SECRET"].map((name) => [
+  name,
+  randomBytes(32).toString("hex"),
+]);
 const env = {
   ...process.env,
   APP_ENV: "local",
   DATABASE_URL: "postgresql+asyncpg://unused:unused@localhost/unused",
   REDIS_URL: "redis://localhost:6379/0",
-  JWT_SECRET: randomBytes(32).toString("hex"),
-  STREAM_TOKEN_SECRET: randomBytes(32).toString("hex"),
+  ...Object.fromEntries(throwaway),
 };
 const dump =
   "import json; from app.main import create_app; " +
