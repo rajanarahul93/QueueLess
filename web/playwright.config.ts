@@ -9,7 +9,14 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: [["list"]],
-  use: { baseURL: process.env.WEB_URL ?? "http://localhost:3000", trace: "retain-on-failure" },
+  use: {
+    baseURL: process.env.WEB_URL ?? "http://localhost:3000",
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+    // Every browser runs in Los Angeles while the businesses are in Kolkata: any time shown in
+    // the browser's zone instead of the business's would be wrong in every test.
+    timezoneId: "America/Los_Angeles",
+  },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
     { name: "firefox", use: { ...devices["Desktop Firefox"] } },

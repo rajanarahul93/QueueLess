@@ -37,6 +37,23 @@ export default async function globalSetup() {
     { name: "E2E Staff", email: staff.email, initial_password: staff.password },
     token,
   );
+  // The booking business: Kolkata, 09:00-13:00 every day, one 30-minute service (8 slots a day).
+  const morning = Object.fromEntries(
+    ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((day) => [day, [{ open: "09:00", close: "13:00" }]]),
+  );
+  const clinic = await post(
+    "/v1/businesses",
+    { name: `E2E Booking ${stamp}`, category: "clinic", timezone: "Asia/Kolkata", open_hours: morning },
+    token,
+  );
+  const service = await post(
+    `/v1/businesses/${clinic.id}/services`,
+    { name: "Checkup", duration_min: 30, buffer_min: 0, price: "250.00" },
+    token,
+  );
   mkdirSync(join(__dirname, ".state"), { recursive: true });
-  writeFileSync(ACCOUNTS_FILE, JSON.stringify({ owner, staff }));
+  writeFileSync(
+    ACCOUNTS_FILE,
+    JSON.stringify({ owner, staff, booking: { id: clinic.id, name: clinic.name, service: service.id } }),
+  );
 }

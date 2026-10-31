@@ -40,6 +40,7 @@ export default function RegisterPage() {
 
   return (
     <section className="mx-auto max-w-[480px] px-4 py-8">
+      <title>Create an owner account · QueueLess</title>
       <h1 className="text-h1 font-semibold">Create an owner account</h1>
       <form onSubmit={onSubmit} className="mt-6 space-y-4">
         <TextField id="name" name="name" label="Your name" autoComplete="name" required maxLength={100} />

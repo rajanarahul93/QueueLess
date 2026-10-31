@@ -24,7 +24,9 @@ export function RequireRole({
 
   useEffect(() => {
     if (status === "signed-out") {
-      router.replace(`${signInPath}?next=${encodeURIComponent(pathname)}`);
+      // The query string too, so a Book page comes back with its service and date.
+      const here = `${pathname}${window.location.search}`;
+      router.replace(`${signInPath}?next=${encodeURIComponent(here)}`);
     }
   }, [status, router, signInPath, pathname]);
 

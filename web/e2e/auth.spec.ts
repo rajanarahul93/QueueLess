@@ -83,7 +83,7 @@ test("two tabs refreshing at once stay signed in (no reuse, no logout)", async (
   }
   expect(refreshes.length).toBeGreaterThan(0);
   expect(refreshes.every((status) => status === "200")).toBe(true);
-  await customer.unroute("**/v1/auth/refresh");
+  await customer.unrouteAll({ behavior: "wait" }); // let a held refresh finish first
   await first.reload(); // the cookie the two tabs left behind still works
   await expect(first.getByRole("heading", { name: /Signed in as/ })).toBeVisible();
 });

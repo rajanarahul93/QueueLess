@@ -1,5 +1,10 @@
 import { NoAccess } from "@/components/NoAccess";
 
 export default function NoAccessPage() {
-  return <NoAccess />;
+  return (
+    <>
+      <title>No access · QueueLess</title>
+      <NoAccess />
+    </>
+  );
 }
