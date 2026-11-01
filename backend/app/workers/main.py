@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import logging
 import os
 import time
 from datetime import UTC, datetime
@@ -10,7 +9,7 @@ from arq import cron
 from arq.connections import RedisSettings
 from redis.asyncio import Redis
 
-from app.core.config import Settings
+from app.core.config import Settings, configure_logging
 from app.db.session import create_engine, create_session_factory
 from app.realtime.relay import run_relay
 from app.services import queue_jobs, retention, rollups
@@ -21,13 +20,8 @@ WORKER_POOL_SIZE = 5
 
 # ctx is arq's per-worker context dict: everything is created at startup and closed at shutdown.
 async def startup(ctx: dict[str, Any]) -> None:
-    app_logger = logging.getLogger("app")
-    if not app_logger.handlers:  # arq configures only its own logger; job summaries are INFO
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-        app_logger.addHandler(handler)
-        app_logger.setLevel(logging.INFO)
     settings = ctx.get("settings") or Settings()
+    configure_logging(settings.log_level)  # arq configures only its own logger
     engine = create_engine(settings.database_url, WORKER_POOL_SIZE)
     ctx["engine"] = engine
     ctx["sessions"] = create_session_factory(engine)
