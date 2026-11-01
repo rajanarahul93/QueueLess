@@ -194,8 +194,11 @@ describe("the live ticket", () => {
     expect(deletes).toBe(0);
     await userEvent.click(leave);
     const confirm = within(dialog).getByRole("button", { name: "Yes, leave" });
-    fireEvent.click(confirm);
-    fireEvent.click(confirm);
+    // Both presses inside one act(): no re-render in between, so the in-flight guard alone decides.
+    await act(async () => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
     await act(() => new Promise((resolve) => setTimeout(resolve, 60)));
     expect(deletes).toBe(1);
   });

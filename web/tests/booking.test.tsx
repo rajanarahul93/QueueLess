@@ -78,8 +78,11 @@ describe("BookingFlow", () => {
     renderFlow();
     await userEvent.click(await screen.findByRole("radio", { name: "9:00 AM" }));
     const confirm = screen.getByRole("button", { name: "Confirm booking" });
-    fireEvent.click(confirm);
-    fireEvent.click(confirm);
+    // Both clicks inside one act(): no re-render (no disabled busy button) in between.
+    await act(async () => {
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+    });
     await screen.findByRole("heading", { name: "You're booked" });
     expect(posts()).toHaveLength(1);
   });
