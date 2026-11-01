@@ -1,0 +1,7 @@
+# End-to-end tests only (web/scripts/e2e-stack.sh adds it with -f): short live streams, so the
+# tests see the server's stream lifetime end and the client reconnect. Never used elsewhere.
+services:
+  api:
+    environment:
+      SSE_MAX_STREAM_SEC: "20"
+      SSE_HEARTBEAT_SEC: "5"

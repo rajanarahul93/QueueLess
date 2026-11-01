@@ -52,6 +52,14 @@ export function errorMessage(error: unknown): string {
   return COPY.INTERNAL_ERROR;
 }
 
+/** Leaving the queue: the one refusal is a ticket already being served. */
+export function leaveMessage(error: unknown): string {
+  if (error instanceof ApiError && error.code === "INVALID_TRANSITION") {
+    return "You're already being served, so you can't leave the queue now.";
+  }
+  return errorMessage(error);
+}
+
 function formatWait(seconds: number): string {
   if (seconds < 60) return `${seconds} s`;
   const minutes = Math.ceil(seconds / 60);

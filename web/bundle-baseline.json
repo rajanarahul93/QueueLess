@@ -1,15 +1,16 @@
 {
-  "/": 144.5,
-  "/b": 150.9,
+  "/": 144.6,
+  "/b": 151,
   "/b/[id]": 150.4,
-  "/b/[id]/book": 153.8,
+  "/b/[id]/book": 153.9,
   "/console": 145.5,
-  "/login": 148.6,
+  "/login": 148.8,
   "/me": 153.8,
-  "/me/reschedule/[id]": 157.5,
-  "/no-access": 144.5,
+  "/me/reschedule/[id]": 157.6,
+  "/no-access": 144.6,
   "/owner": 145.5,
-  "/register": 147.6,
-  "/signin": 147.6,
-  "/ticket": 145.3
+  "/register": 147.8,
+  "/signin": 147.8,
+  "/ticket": 152.7,
+  "/ticket/[id]": 155.8
 }

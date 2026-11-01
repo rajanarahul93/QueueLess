@@ -48,7 +48,8 @@ describe("page titles", () => {
     "app/(auth)/register/page.tsx": "<title>Create an owner account · QueueLess</title>",
     "app/(customer)/me/page.tsx": "<title>My appointments · QueueLess</title>",
     "app/(customer)/me/reschedule/[id]/page.tsx": "<RescheduleTitle id={id} />",
-    "app/(customer)/ticket/page.tsx": "<title>Your ticket · QueueLess</title>",
+    "app/(customer)/ticket/page.tsx": "<title>Your tickets · QueueLess</title>",
+    "app/(customer)/ticket/[id]/page.tsx": "<TicketTitle id={id} />",
     "app/(owner)/owner/page.tsx": "<title>Your business · QueueLess</title>",
     "app/(staff)/console/page.tsx": "<title>Queue console · QueueLess</title>",
   };

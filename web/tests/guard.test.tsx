@@ -1,4 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render as renderBare, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { globSync, readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +17,11 @@ const { RequireRole } = await import("@/lib/auth/RequireRole");
 const OwnerPage = (await import("@/app/(owner)/owner/page")).default;
 const StaffPage = (await import("@/app/(staff)/console/page")).default;
 const CustomerPage = (await import("@/app/(customer)/ticket/page")).default;
+
+// The customer page loads its tickets; the request never answers here (only the guard matters).
+vi.stubGlobal("fetch", () => new Promise(() => {}));
+const render = (node: ReactNode) =>
+  renderBare(<QueryClientProvider client={new QueryClient()}>{node}</QueryClientProvider>);
 
 function owner(role: string) {
   auth = { status: "signed-in", user: { role, name: "N" } };
@@ -40,7 +47,7 @@ describe("RequireRole", () => {
   it.each([
     ["owner", OwnerPage, "Signed in as N", ["owner"], ["customer", "staff", "admin"]],
     ["staff", StaffPage, "Signed in as N", ["staff", "owner"], ["customer", "admin"]],
-    ["customer", CustomerPage, "Your live ticket", ["customer"], ["staff", "owner", "admin"]],
+    ["customer", CustomerPage, "Your tickets", ["customer"], ["staff", "owner", "admin"]],
   ] as const)("the %s routes admit only their roles", (_, Page, inside, allowed, refused) => {
     for (const role of allowed) {
       owner(role);
