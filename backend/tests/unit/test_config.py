@@ -166,3 +166,12 @@ def test_eta_cache_ttl_is_positive() -> None:
     assert make_settings().eta_cache_ttl_sec == 5
     with pytest.raises(ValidationError):
         make_settings(eta_cache_ttl_sec=0)
+
+
+def test_refresh_reuse_grace_default_and_bounds() -> None:
+    assert make_settings().refresh_reuse_grace_sec == 10
+    for allowed in (0, 30):
+        assert make_settings(refresh_reuse_grace_sec=allowed).refresh_reuse_grace_sec == allowed
+    for bad in (-1, 31):
+        with pytest.raises(ValidationError):
+            make_settings(refresh_reuse_grace_sec=bad)

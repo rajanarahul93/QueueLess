@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     jwt_secret: str
     jwt_access_ttl_min: int = Field(default=15, gt=0)
     refresh_ttl_days: int = Field(default=30, gt=0)
+    # A rotated refresh token presented again this soon gets its successor again; 0 turns it off.
+    refresh_reuse_grace_sec: int = Field(default=10, ge=0, le=30)
     stream_token_secret: str
     stream_token_ttl_sec: int = Field(default=60, gt=0)
     # Empty means no Domain attribute on the refresh cookie (local development).

@@ -1,14 +1,15 @@
+import logging
 from typing import Any
 
 import httpx
 import jwt
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 
-from app.core.security import hash_password
-from app.models import RefreshToken, User
+from app.core.security import decode_access_token, hash_password
+from app.models import BusinessMember, RefreshToken, User
 from tests.integration.api import ORIGIN, Api, new_email, new_phone, open_api
-from tests.integration.test_businesses import user_headers
+from tests.integration.test_businesses import new_business, user_headers
 from tests.integration.test_idempotency import create
 
 pytestmark = pytest.mark.anyio
@@ -50,6 +51,12 @@ async def family_revoked(api: Api, login: httpx.Response) -> list[bool]:
         return [revoked is not None for revoked in rows]
 
 
+@pytest.fixture
+def no_grace(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Grace window off: every reuse of a rotated cookie revokes, as before the window existed."""
+    monkeypatch.setattr(api.settings, "refresh_reuse_grace_sec", 0)
+
+
 async def test_refresh_rotates_the_cookie_and_returns_a_new_access_token(api: Api) -> None:
     login = await login_owner(api)
     old_cookie = api.client.cookies["refresh_token"]
@@ -78,6 +85,7 @@ async def test_refresh_uses_the_role_in_the_database_not_the_old_token(api: Api)
     assert claims["role"] == "staff" and refreshed.json()["user"]["role"] == "staff"
 
 
+@pytest.mark.usefixtures("no_grace")
 async def test_reusing_a_rotated_cookie_revokes_the_family_and_clears_the_cookie(api: Api) -> None:
     login = await login_owner(api)
     old = api.client.cookies["refresh_token"]
@@ -258,3 +266,98 @@ async def test_cors_exposes_retry_after_and_the_replay_header(api: Api) -> None:
     # Starlette adds its fixed CORS headers to every response; without Allow-Origin the browser
     # gives a foreign page nothing of the response, these headers included.
     assert "access-control-allow-origin" not in foreign.headers
+
+
+async def test_reusing_a_rotated_cookie_inside_the_window_gets_the_same_successor(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    login = await login_owner(api)
+    old = api.client.cookies["refresh_token"]
+    await api.client.post("/v1/auth/refresh")
+    successor = api.client.cookies["refresh_token"]
+    api.clock.now += 2
+    with caplog.at_level(logging.INFO, logger="app.services.auth"):
+        async with api.new_client() as retry:
+            reused = await retry.post("/v1/auth/refresh", headers=replay(old))
+    assert reused.status_code == 200 and cookie_attributes(reused)["value"] == successor
+    bearer = {"Authorization": f"Bearer {reused.json()['access_token']}"}
+    assert (await api.client.get("/v1/businesses/mine", headers=bearer)).status_code == 200
+    assert (await api.client.post("/v1/auth/refresh")).status_code == 200  # the family is alive
+    async with api.sessions() as session:
+        family_id = (
+            (
+                await session.execute(
+                    select(RefreshToken.family_id).where(
+                        RefreshToken.user_id == login.json()["user"]["id"]
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+    [line] = [r.getMessage() for r in caplog.records if "grace window" in r.getMessage()]
+    assert line == f"refresh reuse within grace window family_id={family_id}"
+    assert old not in caplog.text and successor not in caplog.text
+
+
+async def test_reusing_a_rotated_cookie_after_the_window_revokes_the_family(api: Api) -> None:
+    login = await login_owner(api)
+    old = api.client.cookies["refresh_token"]
+    await api.client.post("/v1/auth/refresh")
+    api.clock.now += api.settings.refresh_reuse_grace_sec + 1
+    async with api.new_client() as attacker:
+        reused = await attacker.post("/v1/auth/refresh", headers=replay(old))
+    assert reused.status_code == 401 and cookie_attributes(reused)["max-age"] == "0"
+    assert all(await family_revoked(api, login))
+    assert (await api.client.post("/v1/auth/refresh")).status_code == 401  # legitimate holder too
+
+
+@pytest.mark.parametrize("ending", ["logout", "revoked_family"])
+async def test_reuse_inside_the_window_after_the_family_ended_is_401(api: Api, ending: str) -> None:
+    login = await login_owner(api)
+    old = api.client.cookies["refresh_token"]
+    await api.client.post("/v1/auth/refresh")
+    if ending == "logout":
+        assert (await api.client.post("/v1/auth/logout")).status_code == 204
+    else:
+        async with api.sessions() as session:
+            await session.execute(
+                update(RefreshToken)
+                .where(RefreshToken.user_id == login.json()["user"]["id"])
+                .where(RefreshToken.revoked_at.is_(None))
+                .values(revoked_at=func.now())
+            )
+            await session.commit()
+    api.clock.now += 2
+    async with api.new_client() as retry:
+        reused = await retry.post("/v1/auth/refresh", headers=replay(old))
+    assert reused.status_code == 401 and cookie_attributes(reused)["max-age"] == "0"
+    assert all(await family_revoked(api, login))
+
+
+async def test_reuse_inside_the_window_reads_role_and_membership_like_a_normal_refresh(
+    api: Api,
+) -> None:
+    login = await login_owner(api)
+    owner_id = login.json()["user"]["id"]
+    business_id = await new_business(
+        api, {"Authorization": f"Bearer {login.json()['access_token']}"}
+    )
+    old = api.client.cookies["refresh_token"]
+    await api.client.post("/v1/auth/refresh")
+    async with api.sessions() as session:  # the session ends for this business after rotation
+        await session.execute(update(User).where(User.id == owner_id).values(role="staff"))
+        await session.execute(
+            delete(BusinessMember).where(
+                BusinessMember.business_id == business_id, BusinessMember.user_id == owner_id
+            )
+        )
+        await session.commit()
+    api.clock.now += 2
+    async with api.new_client() as retry:
+        reused = await retry.post("/v1/auth/refresh", headers=replay(old))
+    assert reused.status_code == 200 and reused.json()["user"]["role"] == "staff"
+    access = reused.json()["access_token"]
+    assert decode_access_token(api.settings, access).role == "staff"  # the server's own check
+    bearer = {"Authorization": f"Bearer {access}"}
+    assert (await api.client.get("/v1/businesses/mine", headers=bearer)).json() == []
