@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { API_URL, clearRateLimits } from "./local-stack";
+import { queueZone } from "./zone";
 
 export const ACCOUNTS_FILE = join(__dirname, ".state", "accounts.json");
 
@@ -78,11 +79,15 @@ export default async function globalSetup() {
   // One queue business per browser project, open all day, each with its own staff member who
   // acts through the API (call next, start, complete): call-next then only serves that
   // project's customer. The staff sign-in reuses this run's throwaway password (state file only).
-  const queues: Record<string, { id: string; name: string; service: string; staff: typeof staff }> = {};
+  // Their zone (see zone.ts), logged and put in the job summary so a failure can be matched to it.
+  const { zone: timezone, why } = queueZone(new Date());
+  console.log(`e2e queue businesses use ${timezone}: ${why}`);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `| queue zone ${timezone} (${why}) | - | info |\n`);
+  const queues: Record<string, { id: string; name: string; service: string; timezone: string; staff: typeof staff }> = {};
   for (const project of ["chromium", "firefox", "webkit"]) {
     const desk = await post(
       "/v1/businesses",
-      { name: `E2E Queue ${project} ${stamp}`, category: "clinic", timezone: "Asia/Kolkata", open_hours: everyDay },
+      { name: `E2E Queue ${project} ${stamp}`, category: "clinic", timezone, open_hours: everyDay },
       token,
     );
     const work = await post(
@@ -92,7 +97,7 @@ export default async function globalSetup() {
     );
     const member = { ...staff, email: `e2e-queue-${project}-${stamp}@example.test` };
     await post(`/v1/businesses/${desk.id}/staff`, { ...staffBody(member), name: "E2E Queue Staff" }, token);
-    queues[project] = { id: desk.id, name: desk.name, service: work.id, staff: member };
+    queues[project] = { id: desk.id, name: desk.name, service: work.id, timezone, staff: member };
   }
   mkdirSync(join(__dirname, ".state"), { recursive: true });
   writeFileSync(

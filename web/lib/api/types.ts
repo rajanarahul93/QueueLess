@@ -11,3 +11,5 @@ export type AppointmentPage = Schemas["AppointmentPage"];
 export type TokenDetail = Schemas["TokenWithStreamOut"];
 export type ActiveToken = Schemas["ActiveTokenOut"];
 export type Eta = Schemas["EtaOut"];
+export type Token = Schemas["TokenOut"];
+export type Queue = Schemas["QueueOut"];

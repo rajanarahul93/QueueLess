@@ -9,7 +9,7 @@ import { Button } from "@/components/Button";
 import { useBusiness, useServices } from "@/components/booking/BusinessDetail";
 import { DelayedSkeleton } from "@/components/booking/DelayedSkeleton";
 import { DateStrip, MAX_DAYS_AHEAD, SlotGrid } from "@/components/booking/SlotPicker";
-import { api, ApiError, newIdempotencyKey } from "@/lib/api/client";
+import { api, ApiError, newIdempotencyKey, sendKeyed } from "@/lib/api/client";
 import { errorMessage } from "@/lib/api/errors";
 import type { Appointment, Availability, Slot } from "@/lib/api/types";
 import { addDays, dayLabel, localToday, timeLabel } from "@/lib/time";
@@ -17,26 +17,11 @@ import { useCountdown } from "@/lib/useCountdown";
 
 type Body = { service_id: string; resource_id: string; start: string };
 
-/** Sends with this action's key. A duplicate still in progress (the same key racing itself) is
- *  retried once, with the same key, after Retry-After. */
-async function sendOnce(path: string, method: "POST" | "PATCH", body: object, key: string): Promise<Appointment> {
-  const send = () => api<Appointment>(path, { method, body, idempotencyKey: key });
-  try {
-    return await send();
-  } catch (error) {
-    if (!(error instanceof ApiError && error.code === "IDEMPOTENCY_CONFLICT" && error.body.in_progress)) {
-      throw error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, (error.retryAfterSec ?? 1) * 1000));
-    return send();
-  }
-}
-
-export const book = (body: Body, key: string) => sendOnce("/v1/appointments", "POST", body, key);
+export const book = (body: Body, key: string) => sendKeyed<Appointment>("/v1/appointments", "POST", body, key);
 
 /** Moves an appointment; the API returns the new one and marks the old one rescheduled. */
 export const move = (id: string, start: string, key: string) =>
-  sendOnce(`/v1/appointments/${id}/reschedule`, "PATCH", { start }, key);
+  sendKeyed<Appointment>(`/v1/appointments/${id}/reschedule`, "PATCH", { start }, key);
 
 function validDate(value: string | null, today: string): string {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) && value >= today && value <= addDays(today, MAX_DAYS_AHEAD)
