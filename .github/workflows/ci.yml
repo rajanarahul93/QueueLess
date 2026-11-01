@@ -53,9 +53,15 @@ jobs:
 
   # Informational: not a required check until it has been green on main ten times in a row.
   # The same script runs locally (`web/scripts/e2e-stack.sh --fresh`); its step times go to the
-  # job summary.
+  # job summary. One job per browser, in parallel: each runner builds its own stack and database
+  # and installs only its browser, so a run takes one browser's time instead of all three.
   e2e:
+    name: e2e (${{ matrix.browser }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v7
       - name: Local-only environment for Compose
@@ -69,14 +75,16 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
-      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
         working-directory: web
       - run: web/scripts/e2e-stack.sh --fresh
+        env:
+          E2E_BROWSERS: ${{ matrix.browser }}
       - if: failure()
         run: docker compose logs --no-color api worker web
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-traces
+          name: e2e-traces-${{ matrix.browser }}
           path: web/test-results/
           retention-days: 7
