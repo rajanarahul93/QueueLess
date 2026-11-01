@@ -61,6 +61,21 @@ export async function toApiError(response: Response): Promise<ApiError> {
   );
 }
 
+/** Sends with this action's key. A duplicate still in progress (the same key racing itself) is
+ *  retried once, with the same key, after Retry-After. */
+export async function sendKeyed<T>(path: string, method: "POST" | "PATCH", body: object | undefined, key: string): Promise<T> {
+  const send = () => api<T>(path, { method, body, idempotencyKey: key });
+  try {
+    return await send();
+  } catch (error) {
+    if (!(error instanceof ApiError && error.code === "IDEMPOTENCY_CONFLICT" && error.body.in_progress)) {
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, (error.retryAfterSec ?? 1) * 1000));
+    return send();
+  }
+}
+
 /** JSON request to the API. A 401 on an authenticated call refreshes once and retries the
  *  same request (same Idempotency-Key); a second 401 is returned to the caller. */
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {

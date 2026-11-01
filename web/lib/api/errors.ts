@@ -19,6 +19,16 @@ const COPY: Record<string, string> = {
   IDEMPOTENCY_CONFLICT: "Your booking is still being processed. Check your appointments before trying again.",
   RESCHEDULE_CUTOFF: "This appointment starts too soon to move. You can still cancel it.",
   INVALID_TRANSITION: "This appointment can't be changed any more.",
+  QUEUE_CLOSED: "This queue isn't taking new people right now.",
+  WALK_INS_FULL: "Walk-ins are full for today.",
+  ALREADY_IN_QUEUE: "You already have a ticket in this queue.",
+};
+
+/** Check-in refusals, by the server's stable `reason` (never its free text). */
+export const CHECK_IN_REASON: Record<string, string> = {
+  too_early: "Check-in opens 30 minutes before your appointment time.",
+  too_late: "Your appointment time has passed. You can still join the queue as a walk-in.",
+  not_booked: "This appointment can't be checked in: it was cancelled, moved or already checked in.",
 };
 
 /** Every code the booking screens can receive; each has its own message above. */
@@ -50,6 +60,18 @@ export function errorMessage(error: unknown): string {
     return COPY[error.code] ?? COPY.INTERNAL_ERROR;
   }
   return COPY.INTERNAL_ERROR;
+}
+
+/** Checking in or joining: the reason-specific refusals, and the hourly limit the two share. */
+export function ticketMessage(error: unknown): string {
+  if (error instanceof ApiError && error.code === "RATE_LIMITED") {
+    return `You've joined or checked in many times this hour. Try again in ${formatWait(error.retryAfterSec ?? 60)}.`;
+  }
+  const reason = error instanceof ApiError ? error.body.reason : undefined;
+  if (error instanceof ApiError && error.code === "INVALID_TRANSITION" && typeof reason === "string" && reason in CHECK_IN_REASON) {
+    return CHECK_IN_REASON[reason];
+  }
+  return errorMessage(error);
 }
 
 /** Leaving the queue: the one refusal is a ticket already being served. */

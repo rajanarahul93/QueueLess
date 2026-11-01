@@ -19,7 +19,7 @@ export function countUntitled() {
 }
 
 /** The page has this title now and never lost its title since it loaded. */
-export async function expectTitle(page: Page, title: string) {
+export async function expectTitle(page: Page, title: string | RegExp) {
   await expect(page).toHaveTitle(title);
   expect(await page.evaluate(() => (window as unknown as { untitled: number }).untitled)).toBe(0);
 }

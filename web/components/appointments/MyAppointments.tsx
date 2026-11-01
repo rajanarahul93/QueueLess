@@ -7,10 +7,11 @@ import { Alert } from "@/components/Alert";
 import { Button } from "@/components/Button";
 import { businessQuery } from "@/components/booking/BusinessDetail";
 import { DelayedSkeleton } from "@/components/booking/DelayedSkeleton";
-import { api } from "@/lib/api/client";
-import { errorMessage } from "@/lib/api/errors";
-import type { Appointment, AppointmentPage, Business } from "@/lib/api/types";
+import { api, ApiError, sendKeyed } from "@/lib/api/client";
+import { errorMessage, ticketMessage } from "@/lib/api/errors";
+import type { Appointment, AppointmentPage, Business, Token } from "@/lib/api/types";
 import { dayLabel, localToday, timeLabel } from "@/lib/time";
+import { ProblemAlert, useTakeTicket } from "@/lib/useTakeTicket";
 
 export const PAST_DAYS = 30;
 const DAY_MS = 86_400_000;
@@ -49,6 +50,44 @@ export function describe(item: Appointment, business: Business): string {
   return `${item.service_name} on ${dayLabel(day, "long")} at ${timeLabel(item.start, business.timezone)}`;
 }
 
+/** Check in is offered on booked appointments dated today in the business's zone; whether the
+ *  window is open (30 minutes before to the end of the slot) is the server's decision. */
+export function canCheckIn(item: Appointment, business: Business, now = new Date()): boolean {
+  return item.status === "booked" && localToday(business.timezone, new Date(item.start)) === localToday(business.timezone, now);
+}
+
+type CheckInProps = { item: Appointment; business: Business; label: string; onGone: (text: string) => void };
+
+function CheckIn({ item, business, label, onGone }: CheckInProps) {
+  const queryClient = useQueryClient();
+  const { take, busy, wait, problem } = useTakeTicket(business.id, (failure) => {
+    const reason = failure instanceof ApiError ? failure.body.reason : undefined;
+    const text = ticketMessage(failure);
+    if (reason === "not_booked") {
+      // The refreshed list drops this appointment, and this item with it: say it above the list.
+      onGone(text);
+      void queryClient.invalidateQueries({ queryKey: ["appointments"] });
+      return null;
+    }
+    return reason === "too_late" ? { text, link: { href: `/b/${business.id}`, label: `Join the queue at ${business.name}` } } : { text };
+  });
+  return (
+    <div className="mt-3">
+      <Button
+        type="button"
+        className="w-full"
+        loading={busy}
+        disabled={wait > 0}
+        onClick={() => void take((key) => sendKeyed<Token>(`/v1/appointments/${item.id}/check-in`, "POST", undefined, key))}
+      >
+        {wait > 0 ? `Check in (wait ${wait} s)` : "Check in"}{" "}
+        <span className="sr-only">{label}</span>
+      </Button>
+      {problem && <ProblemAlert problem={problem} />}
+    </div>
+  );
+}
+
 const PAST_STATUS: Record<string, string> = {
   booked: "Not checked in",
   checked_in: "Checked in",
@@ -78,6 +117,7 @@ export function MyAppointments() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  const [gone, setGone] = useState<string | null>(null);
 
   useEffect(() => {
     if (done) doneLine.current?.focus();
@@ -125,6 +165,7 @@ export function MyAppointments() {
           {done}
         </p>
       )}
+      {gone && <Alert>{gone}</Alert>}
       {live.map((item) => (
         <p key={item.id} className="mt-4 text-body">
           <Link href="/ticket" className="text-primary underline">
@@ -155,6 +196,7 @@ export function MyAppointments() {
                     <span className="sr-only">{label}</span>
                   </Button>
                 </div>
+                {canCheckIn(item, business) && <CheckIn item={item} business={business} label={label} onGone={setGone} />}
               </li>
             );
           })}
@@ -185,6 +227,9 @@ export function MyAppointments() {
                 <p className="text-label text-muted">
                   {business.name} · {PAST_STATUS[item.status] ?? item.status}
                 </p>
+                {canCheckIn(item, business) && (
+                  <CheckIn item={item} business={business} label={describe(item, business)} onGone={setGone} />
+                )}
               </li>
             );
           })}

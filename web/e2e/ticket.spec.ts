@@ -5,13 +5,14 @@ import { ACCOUNTS_FILE } from "./global-setup";
 import { API_URL, otpCodeFor, pushRunningLate, restartApi, uniquePhone } from "./local-stack";
 import { countUntitled, expectTitle, noAxeViolations } from "./page-checks";
 
-// The live ticket in a Los Angeles browser against a Kolkata business, with a staff member
+// The live ticket in a Los Angeles browser against a business in another zone (Kolkata unless
+// that is near midnight; global setup), with a staff member
 // acting through the API (the staff screens come later). Each browser project has its own
 // queue business and staff account (global setup), so call-next only ever serves this test's
 // customer. The e2e stack ends streams after 20 s (its Compose override) to show reconnects.
 test.describe.configure({ mode: "serial" });
 
-type Queue = { id: string; name: string; service: string; staff: { email: string; password: string } };
+type Queue = { id: string; name: string; service: string; timezone: string; staff: { email: string; password: string } };
 const place = (project: string): Queue => JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).queues[project];
 
 let queue: Queue;
@@ -20,6 +21,7 @@ let staffApi: APIRequestContext;
 let staffAuth: Record<string, string>;
 let queueId: string;
 let ticketId: string;
+let firstNumber: number; // other specs may use the same queue first
 
 /** Init script: remembers every pill state the page ever showed (to prove "never polling"). */
 function recordPills() {
@@ -89,12 +91,13 @@ test("a signed-in customer's ticket opens from /ticket, in the business's time",
 
   const ticket = await join();
   ticketId = ticket.id;
+  firstNumber = ticket.token_no;
   await page.reload(); // resume: one active ticket opens directly
   await expect(page).toHaveURL(new RegExp(`/ticket/${ticket.id}$`));
   await expect(page.getByText("You're next")).toBeVisible();
   await expect(pill(page, "live")).toBeVisible();
-  // the browser is in Los Angeles; the time shown is Kolkata's
-  await expect(page.getByText(`Joined at ${timeLabel(ticket.joined_at, "Asia/Kolkata")} (Asia/Kolkata)`)).toBeVisible();
+  // the browser is in Los Angeles; the time shown is the business's
+  await expect(page.getByText(`Joined at ${timeLabel(ticket.joined_at, queue.timezone)} (${queue.timezone})`)).toBeVisible();
   await expectTitle(page, ticketTitle(ticket.token_no));
   await noAxeViolations(page, "/ticket/[id] (next)");
 });
@@ -119,7 +122,7 @@ test("staff calls next: 'It's your turn' within 2 s, then in service and complet
   await expect(page.getByRole("heading", { name: "You've been served. Thanks for visiting." })).toBeFocused();
   await expect(page.getByRole("link", { name: "Back to business" })).toHaveAttribute("href", `/b/${queue.id}`);
   await closed; // the stream was closed by the page, not left open
-  await expectTitle(page, ticketTitle(1));
+  await expectTitle(page, ticketTitle(firstNumber));
   await noAxeViolations(page, "/ticket/[id] (completed)");
 });
 
