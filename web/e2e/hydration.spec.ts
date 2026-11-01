@@ -50,3 +50,14 @@ test("/b: after hydration the search works as usual", async ({ page }) => {
   await expect(page).toHaveURL(/\/b\?q=zzz/);
   await expect(page.getByText("No businesses match your search.")).toBeVisible();
 });
+
+// Protected pages render only a skeleton on the server: nothing to press before hydration.
+for (const path of ["/me", "/ticket", "/ticket/00000000-0000-0000-0000-000000000000"]) {
+  test(`${path}: no enabled control before the page is interactive`, async ({ page }) => {
+    await page.route("**/_next/static/chunks/*.js", (route) => route.abort());
+    await page.goto(path);
+    await expect(page.locator("main")).toBeVisible();
+    await expect(page.locator("main").locator("button:enabled, input:enabled, select:enabled, textarea:enabled, a[href]")).toHaveCount(0);
+  });
+}
+

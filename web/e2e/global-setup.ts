@@ -14,6 +14,13 @@ async function post(path: string, body: unknown, token?: string) {
   return response.json();
 }
 
+/** The API's staff-creation body for a throwaway account (the API names the field). */
+const staffBody = (person: { email: string; password: string }) => ({
+  name: "E2E Staff",
+  email: person.email,
+  initial_password: person.password,
+});
+
 /** Before the run: clear the local rate-limit buckets, then one owner (with a business) and
  *  one staff member for the sign-in tests: 1 register and 1 login per run. */
 export default async function globalSetup() {
@@ -34,7 +41,7 @@ export default async function globalSetup() {
   const staff = { email: `e2e-staff-${stamp}@example.test`, password: crypto.randomUUID() };
   await post(
     `/v1/businesses/${business.id}/staff`,
-    { name: "E2E Staff", email: staff.email, initial_password: staff.password },
+    staffBody(staff),
     token,
   );
   // The booking business: Kolkata, 09:00-13:00 every day, one 30-minute service (8 slots a day).
@@ -68,6 +75,25 @@ export default async function globalSetup() {
     body: JSON.stringify({ settings: { reschedule_cutoff_min: 10080 } }),
   });
   if (!patched.ok) throw new Error(`cutoff settings: ${patched.status} ${await patched.text()}`);
+  // One queue business per browser project, open all day, each with its own staff member who
+  // acts through the API (call next, start, complete): call-next then only serves that
+  // project's customer. The staff sign-in reuses this run's throwaway password (state file only).
+  const queues: Record<string, { id: string; name: string; service: string; staff: typeof staff }> = {};
+  for (const project of ["chromium", "firefox", "webkit"]) {
+    const desk = await post(
+      "/v1/businesses",
+      { name: `E2E Queue ${project} ${stamp}`, category: "clinic", timezone: "Asia/Kolkata", open_hours: everyDay },
+      token,
+    );
+    const work = await post(
+      `/v1/businesses/${desk.id}/services`,
+      { name: "Checkup", duration_min: 30, buffer_min: 0, price: "250.00" },
+      token,
+    );
+    const member = { ...staff, email: `e2e-queue-${project}-${stamp}@example.test` };
+    await post(`/v1/businesses/${desk.id}/staff`, { ...staffBody(member), name: "E2E Queue Staff" }, token);
+    queues[project] = { id: desk.id, name: desk.name, service: work.id, staff: member };
+  }
   mkdirSync(join(__dirname, ".state"), { recursive: true });
   writeFileSync(
     ACCOUNTS_FILE,
@@ -76,6 +102,7 @@ export default async function globalSetup() {
       staff,
       booking: { id: clinic.id, name: clinic.name, service: service.id },
       cutoff: { id: strict.id, name: strict.name, service: strictService.id },
+      queues,
     }),
   );
 }

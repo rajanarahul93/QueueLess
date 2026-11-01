@@ -232,8 +232,11 @@ test("past appointments newest first and the live-ticket pointer", async () => {
   await noAxeViolations(page, "/me (past and pointer)");
 
   await page.getByRole("link", { name: "Checked in: see your live ticket" }).click();
-  await expect(page.getByRole("heading", { name: "Your live ticket" })).toBeVisible();
-  await expectTitle(page, "Your ticket · QueueLess");
+  // the pointer opens the ticket list (this test's appointment was written to the database
+  // without a ticket, so the list is empty)
+  await expect(page.getByRole("heading", { name: "Your tickets" })).toBeVisible();
+  await expect(page.getByText("You have no active tickets.")).toBeVisible();
+  await expectTitle(page, "Your tickets · QueueLess");
   await noAxeViolations(page, "/ticket");
 });
 

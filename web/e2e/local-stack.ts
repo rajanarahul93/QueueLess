@@ -62,6 +62,40 @@ export function insertAppointments(like: string, status: string, starts: Date[],
   return out.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+/** Puts a running-late notice (or its clearing) for one token into the outbox, as the worker's
+ *  job would; the relay publishes it to the token's stream. Local only: the job itself is
+ *  covered by the backend tests, and waiting for it here would take minutes. */
+export function pushRunningLate(tokenId: string, delayMin: number, range: [number, number] | null, cleared = false): void {
+  requireLocal();
+  if (!/^[0-9a-f-]{36}$/.test(tokenId) || !Number.isInteger(delayMin)) throw new Error("bad running-late input");
+  const eta = range ? `jsonb_build_object('min_minutes', ${range[0]}, 'max_minutes', ${range[1]})` : "'null'::jsonb";
+  const kind = cleared ? "token.running_late_cleared" : "token.running_late";
+  const sql =
+    "INSERT INTO outbox_events (business_id, queue_id, event_type, payload) " +
+    `SELECT business_id, queue_id, '${kind}', jsonb_build_object('token_id', id::text, 'token_no', token_no, ` +
+    `'status', status, 'delay_min', ${delayMin}, 'eta', ${eta}) FROM queue_tokens WHERE id = '${tokenId}'`;
+  compose(
+    "exec", "-T", "postgres", "sh", "-c",
+    `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q -v ON_ERROR_STOP=1 -c "${sql}"`,
+  );
+}
+
+/** Restarts the API container (every open stream drops) and waits until it answers again.
+ *  `restart` keeps the container's settings, the e2e override's included (local only). */
+export function restartApi(): void {
+  requireLocal();
+  compose("restart", "api");
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      execFileSync("curl", ["-sf", "-o", "/dev/null", `${API_URL}/healthz`]);
+      return;
+    } catch {
+      execFileSync("sleep", ["1"]);
+    }
+  }
+  throw new Error("the API did not come back");
+}
+
 /** The OTP the mock SMS provider logged for a phone ending in `last4` (the API only runs the
  *  mock with APP_ENV local or test, and logs the last four digits only). */
 export async function otpCodeFor(last4: string, since: Date): Promise<string> {
