@@ -10,10 +10,14 @@ from app.core.security import (
     create_access_token,
     create_stream_token,
     decode_access_token,
+    derive_idempotency_key,
+    derive_otp_key,
+    derive_refresh_successor_key,
     hash_password,
     hash_refresh_token,
     new_refresh_token,
     password_needs_rehash,
+    successor_refresh_token,
     verify_password,
     verify_stream_token,
 )
@@ -149,3 +153,24 @@ def test_access_and_stream_tokens_are_not_interchangeable() -> None:
         verify_stream_token(settings, access, "queue", RESOURCE_ID)
     with pytest.raises(Unauthenticated):
         decode_access_token(settings, stream)
+
+
+def test_refresh_successor_derivation_has_its_own_label() -> None:
+    derived = derive_refresh_successor_key(settings)
+    assert derived not in (
+        derive_otp_key(settings),
+        derive_idempotency_key(settings),
+        TEST_JWT_SECRET.encode(),
+    )
+    other = make_settings(jwt_secret=TEST_JWT_SECRET[::-1])
+    assert derive_refresh_successor_key(other) != derived
+
+
+def test_refresh_successors_are_distinct_never_the_old_one_and_stored_hashed() -> None:
+    olds = [new_refresh_token()[0] for _ in range(500)]
+    successors = [successor_refresh_token(settings, old) for old in olds]
+    assert len({raw for raw, _ in successors}) == len(olds)
+    for old, (raw, stored) in zip(olds, successors, strict=True):
+        assert raw != old and stored == hash_refresh_token(raw) != raw
+        assert len(raw) == len(old) == 43
+        assert successor_refresh_token(settings, old) == (raw, stored)  # deterministic

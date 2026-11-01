@@ -34,6 +34,7 @@ from app.core.security import (
     new_refresh_token,
     otp_mac,
     password_needs_rehash,
+    successor_refresh_token,
     verify_password,
 )
 from app.models import RefreshToken, User
@@ -45,6 +46,8 @@ OTP_REQUEST_PHONE_LIMIT = (5, 3600)
 LOGIN_EMAIL_LIMIT = (5, 900)
 PASSWORD_LOGIN_ROLES = ("owner", "staff", "admin")
 DEFAULT_CUSTOMER_NAME = "Customer"
+# How many rotations inside the grace window a reused refresh token may be followed through.
+REUSE_GRACE_MAX_STEPS = 3
 # Verified against when the email is unknown, so both failures cost one argon2 verification.
 DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-constant-time-login")
 
@@ -77,8 +80,9 @@ def _add_refresh_token(
     user_id: uuid.UUID,
     family_id: uuid.UUID,
     now: datetime,
+    issued: tuple[str, str],
 ) -> str:
-    raw, token_hash = new_refresh_token()
+    raw, token_hash = issued
     session.add(
         RefreshToken(
             user_id=user_id,
@@ -94,7 +98,9 @@ async def issue_refresh_token(
     session: AsyncSession, settings: Settings, user_id: uuid.UUID, now: datetime | None = None
 ) -> str:
     """Starts a new token family (a login). Returns the raw token; only its hash is stored."""
-    raw = _add_refresh_token(session, settings, user_id, uuid.uuid4(), now or datetime.now(UTC))
+    raw = _add_refresh_token(
+        session, settings, user_id, uuid.uuid4(), now or datetime.now(UTC), new_refresh_token()
+    )
     await session.commit()
     return raw
 
@@ -104,9 +110,10 @@ async def rotate_refresh_token(
 ) -> tuple[uuid.UUID, str]:
     """Swaps a refresh token for a new one in the same family; returns (user_id, new raw token).
 
-    Presenting a token that was already rotated revokes its whole family. The row lock makes two
-    simultaneous refreshes of one token serialize: one rotates, the other sees it revoked and
-    takes the reuse path.
+    Presenting a token that was already rotated revokes its whole family, unless it was rotated
+    within refresh_reuse_grace_sec (a retry after a lost response): then it gets the same live
+    successor again. The row lock makes two simultaneous refreshes of one token serialize: one
+    rotates, the other sees it revoked and takes the reuse path.
     """
     now = now or datetime.now(UTC)
     token = (
@@ -120,6 +127,12 @@ async def rotate_refresh_token(
         await session.rollback()  # release the row lock
         raise Unauthenticated("Invalid refresh token")
     if token.revoked_at is not None:
+        successor = await _grace_successor(session, settings, token, raw_token, now)
+        if successor is not None:
+            user_id, family_id = token.user_id, token.family_id
+            await session.rollback()  # nothing changed; releases the row lock
+            logger.info("refresh reuse within grace window family_id=%s", family_id)
+            return user_id, successor
         # Checked before expiry: replaying a rotated token after it expired must still revoke.
         await session.execute(
             update(RefreshToken)
@@ -132,10 +145,45 @@ async def rotate_refresh_token(
         await session.rollback()
         raise Unauthenticated("Invalid refresh token")
     token.revoked_at = now
-    new_raw = _add_refresh_token(session, settings, token.user_id, token.family_id, now)
+    new_raw = _add_refresh_token(
+        session,
+        settings,
+        token.user_id,
+        token.family_id,
+        now,
+        successor_refresh_token(settings, raw_token),
+    )
     user_id = token.user_id
     await session.commit()
     return user_id, new_raw
+
+
+async def _grace_successor(
+    session: AsyncSession, settings: Settings, token: RefreshToken, raw_token: str, now: datetime
+) -> str | None:
+    """The live token that rotations of raw_token led to, if each of those rotations happened
+    within the grace window and there were at most REUSE_GRACE_MAX_STEPS; otherwise None."""
+    window = timedelta(seconds=settings.refresh_reuse_grace_sec)
+    raw, row = raw_token, token
+    for _ in range(REUSE_GRACE_MAX_STEPS):
+        if not window or row.revoked_at is None or now - row.revoked_at > window:
+            return None
+        raw, successor_hash = successor_refresh_token(settings, raw)
+        # Not locked: only read. A logout or revocation ends the chain at a revoked row.
+        found = (
+            await session.execute(
+                select(RefreshToken).where(
+                    RefreshToken.token_hash == successor_hash,
+                    RefreshToken.family_id == token.family_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if found is None or found.expires_at <= now:
+            return None
+        if found.revoked_at is None:
+            return raw
+        row = found
+    return None
 
 
 @contextmanager

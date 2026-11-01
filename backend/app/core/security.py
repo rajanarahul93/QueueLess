@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import hmac
 import secrets
@@ -84,6 +85,17 @@ def hash_refresh_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def successor_refresh_token(settings: Settings, raw: str) -> tuple[str, str]:
+    """The token that replaces `raw` when it rotates: (raw for the client, hash for the database).
+
+    Derived rather than random, so a refresh retried after a lost response can be given the same
+    successor again without storing any raw token. Same format as new_refresh_token.
+    """
+    mac = hmac.new(derive_refresh_successor_key(settings), raw.encode(), hashlib.sha256).digest()
+    successor = base64.urlsafe_b64encode(mac).rstrip(b"=").decode()
+    return successor, hash_refresh_token(successor)
+
+
 StreamScope = Literal["queue", "token"]
 
 
@@ -149,4 +161,11 @@ def derive_idempotency_key(settings: Settings) -> bytes:
     """Domain-separated from the JWT and OTP keys; it hides keys and request bodies in Redis."""
     return hmac.new(
         settings.jwt_secret.encode(), b"queueless/idempotency/v1", hashlib.sha256
+    ).digest()
+
+
+def derive_refresh_successor_key(settings: Settings) -> bytes:
+    """Domain-separated from the JWT, OTP and idempotency keys; it derives refresh successors."""
+    return hmac.new(
+        settings.jwt_secret.encode(), b"queueless/refresh-successor/v1", hashlib.sha256
     ).digest()
