@@ -11,7 +11,7 @@ from app.core.errors import Unauthenticated
 from app.core.security import hash_refresh_token
 from app.db.session import create_engine, create_session_factory
 from app.models import RefreshToken, User
-from app.services.auth import issue_refresh_token, rotate_refresh_token
+from app.services.auth import REUSE_GRACE_MAX_STEPS, issue_refresh_token, rotate_refresh_token
 from tests.helpers import make_settings
 
 pytestmark = pytest.mark.anyio
@@ -61,6 +61,12 @@ async def family_rows(
         return list(rows.scalars())
 
 
+@pytest.fixture
+def no_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Grace window off: every reuse of a rotated token revokes, as before the window existed."""
+    monkeypatch.setitem(globals(), "settings", make_settings(refresh_reuse_grace_sec=0))
+
+
 async def test_issue_stores_only_the_hash(
     sessions: async_sessionmaker[AsyncSession], user_id: uuid.UUID
 ) -> None:
@@ -83,6 +89,7 @@ async def test_rotation_returns_a_new_token_in_the_same_family(
     await rotate(sessions, second)  # the new token works
 
 
+@pytest.mark.usefixtures("no_grace")
 async def test_reuse_of_a_rotated_token_revokes_the_whole_family(
     sessions: async_sessionmaker[AsyncSession], user_id: uuid.UUID
 ) -> None:
@@ -95,6 +102,7 @@ async def test_reuse_of_a_rotated_token_revokes_the_whole_family(
         await rotate(sessions, current)  # the legitimate holder is logged out too
 
 
+@pytest.mark.usefixtures("no_grace")
 async def test_reuse_does_not_touch_other_families(
     sessions: async_sessionmaker[AsyncSession], user_id: uuid.UUID
 ) -> None:
@@ -124,6 +132,7 @@ async def test_expired_token_is_rejected_and_not_rotated(
     assert row.revoked_at is None
 
 
+@pytest.mark.usefixtures("no_grace")
 async def test_two_simultaneous_refreshes_of_one_token_exactly_one_succeeds(
     sessions: async_sessionmaker[AsyncSession], user_id: uuid.UUID
 ) -> None:
@@ -152,3 +161,23 @@ async def test_replaying_a_rotated_token_after_expiry_still_revokes_the_family(
     assert all(row.revoked_at is not None for row in await family_rows(sessions, user_id))
     with pytest.raises(Unauthenticated):
         await rotate(sessions, current)
+
+
+async def test_reuse_inside_the_window_follows_at_most_three_rotations(
+    sessions: async_sessionmaker[AsyncSession], user_id: uuid.UUID
+) -> None:
+    start = datetime.now(UTC)
+    chain = [await login(sessions, user_id)]
+    for _ in range(REUSE_GRACE_MAX_STEPS):
+        async with sessions() as session:
+            chain.append((await rotate_refresh_token(session, settings, chain[-1], start))[1])
+    async with sessions() as session:
+        assert await rotate_refresh_token(
+            session, settings, chain[0], start + timedelta(seconds=2)
+        ) == (user_id, chain[-1])
+    async with sessions() as session:
+        await rotate_refresh_token(session, settings, chain[-1], start)  # a fourth rotation
+    async with sessions() as session:
+        with pytest.raises(Unauthenticated):
+            await rotate_refresh_token(session, settings, chain[0], start + timedelta(seconds=2))
+    assert all(row.revoked_at is not None for row in await family_rows(sessions, user_id))
