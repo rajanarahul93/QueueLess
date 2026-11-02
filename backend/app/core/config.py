@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
@@ -8,6 +9,7 @@ from pydantic_settings import BaseSettings, NoDecode
 LOCAL_JWT_SECRET = "local-dev-only-jwt-secret-not-for-production-use"
 LOCAL_STREAM_TOKEN_SECRET = "local-dev-only-stream-secret-not-for-production-use"
 MIN_SECRET_LENGTH = 32
+APP_LOG_HANDLER = "queueless"
 
 
 class Settings(BaseSettings):
@@ -15,6 +17,8 @@ class Settings(BaseSettings):
 
     # The strict value is the default, so forgetting APP_ENV cannot accept a dev placeholder.
     app_env: Literal["local", "test", "production"] = "production"
+    # Level of the app's own log lines (app.*); uvicorn and arq set their own. Any case accepted.
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     database_url: str
     redis_url: str
     jwt_secret: str
@@ -42,6 +46,11 @@ class Settings(BaseSettings):
     sse_max_stream_sec: int = Field(default=1800, gt=0)  # hard cap; the client reconnects
     eta_cache_ttl_sec: int = Field(default=5, gt=0)  # every queue event also changes the key
 
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def upper_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def split_origins(cls, value: object) -> object:
@@ -67,3 +76,18 @@ class Settings(BaseSettings):
         if self.otp_provider == "mock" and self.app_env == "production":
             raise ValueError("otp_provider mock is not allowed in production")
         return self
+
+
+def configure_logging(level: str) -> None:
+    """Prints the app's own log lines (app.*) on stderr, in one format for the API and the worker.
+
+    Only the `app` logger gets a handler: uvicorn and arq keep theirs, so no line is printed
+    twice. A second call in one process (tests, a reload) only changes the level.
+    """
+    app_logger = logging.getLogger("app")
+    if not any(handler.get_name() == APP_LOG_HANDLER for handler in app_logger.handlers):
+        handler = logging.StreamHandler()
+        handler.set_name(APP_LOG_HANDLER)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        app_logger.addHandler(handler)
+    app_logger.setLevel(level)

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
 from app.api.v1 import appointments, auth, businesses, queues, reports, streams, tokens
-from app.core.config import Settings
+from app.core.config import Settings, configure_logging
 from app.core.errors import register_error_handlers
 from app.core.idempotency import Replay, handle_replay
 from app.core.timezones import zone_names
@@ -24,6 +24,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     `clock` is injectable so tests control OTP expiry and rate-limit windows without sleeping.
     """
     resolved = settings or Settings()
+    configure_logging(resolved.log_level)
     zone_names()  # a broken tzdata install must stop the app at startup
     access_log = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, RedactStreamToken) for f in access_log.filters):

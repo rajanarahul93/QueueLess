@@ -175,3 +175,11 @@ def test_refresh_reuse_grace_default_and_bounds() -> None:
     for bad in (-1, 31):
         with pytest.raises(ValidationError):
             make_settings(refresh_reuse_grace_sec=bad)
+
+
+def test_log_level_default_case_and_bounds() -> None:
+    assert make_settings().log_level == "INFO"
+    assert make_settings(log_level="warning").log_level == "WARNING"
+    for bad in ("TRACE", "CRITICAL", "", "verbose"):
+        with pytest.raises(ValidationError):
+            make_settings(log_level=bad)

@@ -21,8 +21,8 @@ class MockSmsProvider:
     async def send_otp(self, phone: str, code: str) -> None:
         self.sent.append((phone, code))
         if self._log_codes:
-            # WARNING because no logging config exists yet and INFO would be dropped. Last four
-            # digits only (R5.2: no full phone numbers); the code is allowed for the mock in dev.
+            # WARNING so it still shows with LOG_LEVEL=WARNING. Last four digits only (R5.2: no
+            # full phone numbers); the code is allowed for the mock in dev.
             logger.warning("MOCK SMS to ***%s: OTP code %s", phone[-4:], code)
 
 
