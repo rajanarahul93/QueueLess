@@ -10,7 +10,7 @@ from sqlalchemy import event, select, text, update
 from sqlalchemy.dialects import postgresql
 
 from app.models import OutboxEvent, Service
-from app.services import queue as queue_service
+from app.realtime.outbox import emit_token_event
 from app.services.queue import active_tokens_query
 from tests.integration.api import Api
 from tests.integration.test_availability import utc
@@ -320,18 +320,17 @@ async def test_a_walk_in_join_emits_without_touching_the_service_tables(
     w = await world(api)
     queue = await queue_id(w)
     _, headers = await customer(api)
-    inner = queue_service.emit_token_event
     during: list[str] = []
 
     async def recording(*args: Any, **kwargs: Any) -> None:
         statements, stop = captured_sql(api)
         try:
-            await inner(*args, **kwargs)
+            await emit_token_event(*args, **kwargs)
         finally:
             stop()
             during.extend(statements)
 
-    monkeypatch.setattr(queue_service, "emit_token_event", recording)
+    monkeypatch.setattr("app.services.queue.emit_token_event", recording)
     response = await join(api, headers, queue)
     assert response.status_code == 201, response.text
     touched = [s for s in during if "service_sessions" in s or " services " in s]
