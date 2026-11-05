@@ -1250,6 +1250,10 @@ export interface components {
             priority: number;
             /** Queued At */
             queued_at: string;
+            /** Service Id */
+            service_id: string | null;
+            /** Service Name */
+            service_name: string | null;
             /** Skip Count */
             skip_count: number;
             /** Source */

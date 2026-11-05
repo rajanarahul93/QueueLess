@@ -35,6 +35,8 @@ STAFF_KEYS = {
     "started_at",
     "order_position",
     "appointment_id",
+    "service_id",
+    "service_name",
     "customer",
 }
 
