@@ -83,7 +83,12 @@ Index(
 
 class ServiceSession(Base):
     __tablename__ = "service_sessions"
-    __table_args__ = (Index("ix_service_sessions_service_id_ended_at", "service_id", "ended_at"),)
+    __table_args__ = (
+        Index("ix_service_sessions_service_id_ended_at", "service_id", "ended_at"),
+        # The staff snapshot joins a token to its service, and completing one looks up its
+        # open session; both are by token_id.
+        Index("ix_service_sessions_token_id", "token_id"),
+    )
 
     id: Mapped[UuidPk]
     business_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("businesses.id", ondelete="RESTRICT"))

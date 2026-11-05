@@ -114,6 +114,23 @@ def test_0006_downgrade_refuses_rows_the_old_key_cannot_hold(postgres_url: str) 
     command.upgrade(config, "head")
 
 
+def test_0007_adds_and_drops_the_service_sessions_token_id_index(postgres_url: str) -> None:
+    reset_schema(postgres_url)
+    config = alembic_config(postgres_url)
+    index_sql = (
+        "SELECT indexname FROM pg_indexes WHERE tablename = 'service_sessions' "
+        "AND indexname = 'ix_service_sessions_token_id'"
+    )
+    command.upgrade(config, "0006")
+    assert asyncio.run(query(postgres_url, index_sql)) == []
+    command.upgrade(config, "0007")
+    assert asyncio.run(query(postgres_url, index_sql)) == [("ix_service_sessions_token_id",)]
+    command.downgrade(config, "0006")  # both ways, on an empty database
+    assert asyncio.run(query(postgres_url, index_sql)) == []
+    command.upgrade(config, "head")
+    assert asyncio.run(query(postgres_url, index_sql)) == [("ix_service_sessions_token_id",)]
+
+
 async def execute(url: str, sql: str) -> None:
     engine = create_engine(url)
     async with engine.begin() as connection:

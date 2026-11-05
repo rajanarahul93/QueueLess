@@ -40,6 +40,10 @@ class SnapshotToken(BaseModel):
     # called and in_service. Call-next may apply the walk-in ratio, so it is not a promise.
     order_position: int | None
     appointment_id: uuid.UUID | None
+    # The appointment's service, or the one staff chose at Start; null while it is unknown
+    # (a walk-in that has not been started). Business data only, never personal.
+    service_id: uuid.UUID | None
+    service_name: str | None
     customer: SnapshotCustomer
 
 

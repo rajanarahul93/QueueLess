@@ -259,10 +259,36 @@ async def test_every_mutation_writes_its_event_and_nothing_personal(api: Api) ->
         ("token.cancelled", "end_of_day"),
         ("queue.status_changed", "end_of_day"),
     ], by_type
-    raw = json.dumps([e.payload for e in rows])
+    payloads = [e.payload for e in rows]
+    raw = json.dumps(payloads)
     assert str(user.id) not in raw  # no customer ids
-    for forbidden in ("customer_id", "name", "phone", "email", "+91", "@"):
+    for forbidden in ("customer_id", "phone", "email", "+91", "@"):
         assert forbidden not in raw, forbidden
+
+    def walk(node: Any, found: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                found.append((key, value))
+                walk(value, found)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, found)
+        return found
+
+    # Keys at any depth: `service_name` is a service's own name, which is business data; no
+    # other key may name or contact a person. The fixture name is one letter, so it is compared
+    # as a whole value rather than as a substring of the payload.
+    for key, value in walk(payloads, []):
+        assert key == "service_name" or key not in {
+            "customer_id",
+            "customer_name",
+            "name",
+            "phone",
+            "email",
+        }, key
+        assert "phone" not in key and "email" not in key, key
+        assert value != user.name, key
+    assert user.phone is not None and user.phone.lstrip("+") not in raw
     queue_ids = {str(e.queue_id) for e in rows if e.event_type.startswith(("token.", "queue."))}
     assert queue_ids == {queue}
     assert {e.queue_id for e in rows if e.event_type.startswith("appointment.")} == {None}

@@ -57,7 +57,7 @@ from app.models import (
     ServiceSession,
     User,
 )
-from app.realtime.outbox import emit_event, emit_token_event, lock_queue_events
+from app.realtime.outbox import emit_event, emit_token_event, lock_queue_events, with_service
 from app.schemas.queue import (
     ActiveTokenOut,
     EtaOut,
@@ -264,9 +264,10 @@ async def find_member_queue(
     return MemberQueue(row.Queue, get_zone(row.timezone), counts, ratio(row.settings))
 
 
-def active_tokens_query(queue_id: uuid.UUID) -> Select[QueueToken, str]:
-    """The snapshot's token read: active tokens in base_order(), with the customer's name."""
-    return (
+def active_tokens_query(queue_id: uuid.UUID) -> Select[*tuple[Any, ...]]:
+    """The snapshot's token read: active tokens in base_order(), with the customer's name and
+    the token's service. One statement for the whole queue."""
+    return with_service(
         select(QueueToken, User.name)
         .join(User, User.id == QueueToken.customer_id)
         .where(QueueToken.queue_id == queue_id, QueueToken.status.in_(ACTIVE_TOKEN_STATUSES))
@@ -287,7 +288,11 @@ def next_waiting_query(queue_id: uuid.UUID) -> Select[QueueToken]:
 
 
 def _staff_token(
-    token: QueueToken, name: str, zone: ZoneInfo, order_position: int | None
+    token: QueueToken,
+    name: str,
+    zone: ZoneInfo,
+    order_position: int | None,
+    service: tuple[uuid.UUID | None, str | None],
 ) -> SnapshotToken:
     """The staff view of a token: the customer's id and name only."""
     return SnapshotToken(
@@ -304,6 +309,8 @@ def _staff_token(
         started_at=_local(token.started_at, zone),
         order_position=order_position,
         appointment_id=token.appointment_id,
+        service_id=service[0],
+        service_name=service[1],
         customer=SnapshotCustomer(id=token.customer_id, name=name),
     )
 
@@ -315,12 +322,15 @@ async def get_snapshot(session: AsyncSession, found: MemberQueue) -> SnapshotOut
     walk_ins, appointments = found.walk_in_ratio
     recent = (await session.execute(history_query(queue.id, walk_ins + appointments))).all()
     history = [source for source, _ in recent]
-    waiting = [token for token, _ in rows if token.status == "waiting"]
+    waiting = [row[0] for row in rows if row[0].status == "waiting"]
     order = {
         token.id: place
         for place, token in enumerate(call_order(waiting, history, walk_ins, appointments), 1)
     }
-    items = [_staff_token(token, name, zone, order.get(token.id)) for token, name in rows]
+    items = [
+        _staff_token(token, name, zone, order.get(token.id), (service_id, service_name))
+        for token, name, service_id, service_name in rows
+    ]
     return SnapshotOut(
         id=queue.id,
         business_id=queue.business_id,
@@ -1043,19 +1053,20 @@ async def staff_token(session: AsyncSession, token_id: uuid.UUID) -> SnapshotTok
     """The token, its customer's name, and its place in call order while it waits."""
     row = (
         await session.execute(
-            select(QueueToken, User.name, Business.timezone, Business.settings)
-            .join(User, User.id == QueueToken.customer_id)
-            .join(Business, Business.id == QueueToken.business_id)
-            .where(QueueToken.id == token_id)
-            .execution_options(populate_existing=True)
+            with_service(
+                select(QueueToken, User.name, Business.timezone, Business.settings)
+                .join(User, User.id == QueueToken.customer_id)
+                .join(Business, Business.id == QueueToken.business_id)
+                .where(QueueToken.id == token_id)
+            ).execution_options(populate_existing=True)
         )
     ).one()
-    token, name, timezone, settings = row
+    token, name, timezone, settings, service_id, service_name = row
     place = None
     if token.status == "waiting":
         order = await call_order_of(session, token.queue_id, settings)
         place = [waiting.id for waiting in order].index(token.id) + 1
-    return _staff_token(token, name, get_zone(timezone), place)
+    return _staff_token(token, name, get_zone(timezone), place, (service_id, service_name))
 
 
 async def call_next(
