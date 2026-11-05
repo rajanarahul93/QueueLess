@@ -28,6 +28,13 @@ TOKEN_FIELDS = (
 )
 TOKEN_TIMES = ("joined_at", "queued_at", "called_at", "started_at", "completed_at")
 
+# A service session is written only when a token becomes in_service, and transitions.py reaches
+# in_service only from called via "start" and leaves it only via "complete". So a token with no
+# appointment can hold a service only once its status is one of these; before that there is
+# nothing to join to. The walk-in join, the one event emitted under burst inside the queue row
+# lock, therefore keeps the plain single-row read.
+SERVICE_STATUSES = frozenset({"in_service", "completed"})
+
 # A token carries no service column: an appointment token's service is its appointment's, a
 # walk-in's is the session staff opened at Start, and a walk-in before Start has none. One
 # definition here, used by the event payloads and by the staff read paths.
@@ -91,10 +98,23 @@ async def emit_token_event(
     session: AsyncSession, token_id: uuid.UUID, event_type: str, at: datetime, **extra: object
 ) -> None:
     """A queue event for one token, built from the token as this transaction now sees it."""
-    token, service_id, service_name = (
-        await session.execute(with_service(select(QueueToken).where(QueueToken.id == token_id)))
-    ).one()
-    await session.refresh(token)
+    # populate_existing: this transaction has usually just UPDATEd the row, so the identity
+    # map's copy is stale; reading it fresh here does what a second refresh used to do.
+    token = (
+        await session.execute(
+            select(QueueToken)
+            .where(QueueToken.id == token_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    if token.appointment_id is None and token.status not in SERVICE_STATUSES:
+        service_id, service_name = None, None
+    else:
+        _, service_id, service_name = (
+            await session.execute(
+                with_service(select(QueueToken.id).where(QueueToken.id == token_id))
+            )
+        ).one()
     payload: dict[str, Any] = {"token_id": str(token.id)}
     payload.update({field: getattr(token, field) for field in TOKEN_FIELDS})
     for field in TOKEN_TIMES:

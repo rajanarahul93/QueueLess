@@ -10,6 +10,7 @@ from sqlalchemy import event, select, text, update
 from sqlalchemy.dialects import postgresql
 
 from app.models import OutboxEvent, Service
+from app.services import queue as queue_service
 from app.services.queue import active_tokens_query
 from tests.integration.api import Api
 from tests.integration.test_availability import utc
@@ -296,3 +297,95 @@ async def test_completing_a_token_finds_its_open_session_by_index(api: Api) -> N
         plan = "\n".join(row[0] for row in explained)
     print(f"\n{plan}")
     assert "ix_service_sessions_token_id" in plan, plan
+
+
+def captured_sql(api: Api) -> tuple[list[str], Any]:
+    """Every statement the engine runs, until the returned stop() is called."""
+    statements: list[str] = []
+    engine = api.app.state.engine.sync_engine
+
+    def seen(_c: Any, _cu: Any, statement: str, *_rest: Any) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", seen)
+    return statements, lambda: event.remove(engine, "before_cursor_execute", seen)
+
+
+async def test_a_walk_in_join_emits_without_touching_the_service_tables(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hot path: the join emits its event inside the queue row lock, so it must not pay for
+    a service a walk-in cannot have yet. (The ETA reads those tables either way; this watches
+    the emit step alone.)"""
+    w = await world(api)
+    queue = await queue_id(w)
+    _, headers = await customer(api)
+    inner = queue_service.emit_token_event
+    during: list[str] = []
+
+    async def recording(*args: Any, **kwargs: Any) -> None:
+        statements, stop = captured_sql(api)
+        try:
+            await inner(*args, **kwargs)
+        finally:
+            stop()
+            during.extend(statements)
+
+    monkeypatch.setattr(queue_service, "emit_token_event", recording)
+    response = await join(api, headers, queue)
+    assert response.status_code == 201, response.text
+    touched = [s for s in during if "service_sessions" in s or " services " in s]
+    assert touched == [], touched
+    assert len(during) == 3, during  # the advisory lock, the token read, the outbox insert
+    # The event is there, with the service left unknown.
+    [joined_event] = await token_events(api, response.json()["id"])
+    assert joined_event.event_type == "token.joined"
+    assert joined_event.payload["service_id"] is None
+    assert joined_event.payload["service_name"] is None
+
+
+async def test_a_walk_ins_start_and_complete_deltas_carry_the_service_the_rest_null(
+    api: Api,
+) -> None:
+    w = await world(api)
+    queue = await queue_id(w)
+    staff = await w.staff()
+    expected = await service_name(api, w.service_id)
+    # One walk-in that is called, skipped, called again, started and completed.
+    _, first = await customer(api)
+    served = (await join(api, first, queue)).json()
+    called = (await call_next(api, staff, queue)).json()
+    await act(api, staff, served["id"], "skip", called["version"])
+    recalled = (await call_next(api, staff, queue)).json()
+    await act(api, staff, served["id"], "start", recalled["version"], service_id=w.service_id)
+    started_version = (await staff_tokens(api, w, queue))[served["id"]]["version"]
+    await act(api, staff, served["id"], "complete", started_version)
+    by_type = {e.event_type: e.payload for e in await token_events(api, served["id"])}
+    for event_type in ("token.started", "token.completed"):
+        assert by_type[event_type]["service_id"] == w.service_id, event_type
+        assert by_type[event_type]["service_name"] == expected, event_type
+    for event_type in ("token.joined", "token.called", "token.skipped"):
+        assert by_type[event_type]["service_id"] is None, event_type
+        assert by_type[event_type]["service_name"] is None, event_type
+    # A second walk-in that is cancelled, and a third marked no-show: never started, so null.
+    _, second = await customer(api)
+    left = (await join(api, second, queue)).json()
+    await api.client.delete(f"/v1/tokens/{left['id']}", headers=second)
+    _, third = await customer(api)
+    missing = (await join(api, third, queue)).json()
+    no_show_call = (await call_next(api, staff, queue)).json()
+    assert no_show_call["id"] == missing["id"]
+    await act(api, staff, missing["id"], "no-show", no_show_call["version"])
+    for token_id, event_type in ((left["id"], "token.cancelled"), (missing["id"], "token.no_show")):
+        [row] = [e for e in await token_events(api, token_id) if e.event_type == event_type]
+        assert row.payload["service_id"] is None, event_type
+        assert row.payload["service_name"] is None, event_type
+
+
+async def test_an_appointment_check_in_event_carries_its_service(api: Api) -> None:
+    w = await world(api)
+    _, _, checked_in = await appointment_token(w)
+    [joined_event] = await token_events(api, checked_in)
+    assert joined_event.event_type == "token.joined"
+    assert joined_event.payload["service_id"] == w.service_id
+    assert joined_event.payload["service_name"] == await service_name(api, w.service_id)
