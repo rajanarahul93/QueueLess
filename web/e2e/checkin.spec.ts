@@ -13,7 +13,11 @@ import { countUntitled, expectTitle, noAxeViolations } from "./page-checks";
 test.describe.configure({ mode: "serial" });
 
 type Queue = { id: string; name: string; service: string; timezone: string; staff: { email: string; password: string } };
-const place = (project: string): Queue => JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).queues[project];
+const place = (project: string): Queue => {
+  const found = JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).queues[project];
+  if (!found) throw new Error(`no queue business for ${project}: set E2E_BROWSERS to include it`);
+  return found;
+};
 const MINUTE = 60_000;
 
 let queue: Queue;
@@ -233,7 +237,8 @@ test("signed out, Join leads to sign-in and back; staff are told it is for custo
   await desk.getByLabel("Email").fill(queue.staff.email);
   await desk.getByLabel("Password").fill(queue.staff.password);
   await desk.getByRole("button", { name: "Sign in" }).click();
-  await expect(desk).toHaveURL(/\/console$/);
+  // One business, so the picker opens its console straight away (6D-1).
+  await expect(desk).toHaveURL(/\/console\/[0-9a-f-]{36}$/);
   await desk.goto(`/b/${queue.id}`);
   await expect(desk.getByText("Joining the queue is for customer accounts.")).toBeVisible();
   await expect(desk.getByRole("button", { name: "Join the queue" })).toHaveCount(0);

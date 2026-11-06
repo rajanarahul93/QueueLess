@@ -1,14 +1,14 @@
 "use client";
 
-import { useAuth } from "@/lib/auth/AuthProvider";
+import { BusinessPicker } from "@/components/console/BusinessPicker";
 import { RequireRole } from "@/lib/auth/RequireRole";
 
-function SignedIn() {
-  const { user } = useAuth();
+function Picker() {
   return (
     <section className="mx-auto max-w-[480px] px-4 py-8">
-      <h1 className="text-h1 font-semibold">Signed in as {user?.name}</h1>
-      <p className="mt-2 text-body text-muted">The queue console arrives in a later update.</p>
+      <h1 className="text-h1 font-semibold">Choose a business</h1>
+      <p className="mt-2 text-body text-muted">You work at more than one. Pick the queue to run.</p>
+      <BusinessPicker />
     </section>
   );
 }
@@ -17,9 +17,9 @@ function SignedIn() {
 export default function Page() {
   return (
     <>
-      <title>Queue console · QueueLess</title>
+      <title>Choose a business · QueueLess</title>
       <RequireRole roles={["staff", "owner"]} signInPath="/signin">
-        <SignedIn />
+        <Picker />
       </RequireRole>
     </>
   );

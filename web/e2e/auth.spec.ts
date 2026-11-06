@@ -103,9 +103,11 @@ test("signing out in one tab signs out the other", async () => {
 });
 
 test("staff and owner sign in with email and land on their screens", async ({ browser }) => {
-  for (const [role, home] of [
-    ["staff", /\/console$/],
-    ["owner", /\/owner$/],
+  // The staff member of this run works at one business, so the picker opens its console
+  // straight away (6D-1); the owner still lands on their own screen.
+  for (const [role, home, heading] of [
+    ["staff", /\/console\/[0-9a-f-]{36}$/, "E2E Clinic"],
+    ["owner", /\/owner$/, /Signed in as/],
   ] as const) {
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -114,7 +116,7 @@ test("staff and owner sign in with email and land on their screens", async ({ br
     await page.getByLabel("Password").fill(accounts()[role].password);
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page).toHaveURL(home);
-    await expect(page.getByRole("heading", { name: /Signed in as/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
     await noAxeViolations(page, `${role} home`);
     await context.close();
   }

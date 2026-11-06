@@ -13,3 +13,7 @@ export type ActiveToken = Schemas["ActiveTokenOut"];
 export type Eta = Schemas["EtaOut"];
 export type Token = Schemas["TokenOut"];
 export type Queue = Schemas["QueueOut"];
+export type QueueSnapshot = Schemas["SnapshotOut"];
+export type SnapshotToken = Schemas["SnapshotToken"];
+export type StreamToken = Schemas["StreamTokenOut"];
+export type MyBusiness = Schemas["MyBusinessOut"];
