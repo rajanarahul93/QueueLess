@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render as renderBare, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { render as renderBare, screen, waitFor } from "@testing-library/react";
+import { Suspense, type ReactNode } from "react";
 import { globSync, readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +16,7 @@ vi.mock("@/lib/auth/AuthProvider", () => ({ useAuth: () => auth }));
 const { RequireRole } = await import("@/lib/auth/RequireRole");
 const OwnerPage = (await import("@/app/(owner)/owner/page")).default;
 const StaffPage = (await import("@/app/(staff)/console/page")).default;
+const ConsolePage = (await import("@/app/(staff)/console/[businessId]/page")).default;
 const CustomerPage = (await import("@/app/(customer)/ticket/page")).default;
 
 // The customer page loads its tickets; the request never answers here (only the guard matters).
@@ -46,7 +47,7 @@ describe("RequireRole", () => {
 
   it.each([
     ["owner", OwnerPage, "Signed in as N", ["owner"], ["customer", "staff", "admin"]],
-    ["staff", StaffPage, "Signed in as N", ["staff", "owner"], ["customer", "admin"]],
+    ["staff", StaffPage, "Choose a business", ["staff", "owner"], ["customer", "admin"]],
     ["customer", CustomerPage, "Your tickets", ["customer"], ["staff", "owner", "admin"]],
   ] as const)("the %s routes admit only their roles", (_, Page, inside, allowed, refused) => {
     for (const role of allowed) {
@@ -62,6 +63,26 @@ describe("RequireRole", () => {
       expect(screen.getByText("You don't have access to this page")).toBeTruthy();
       unmount();
     }
+  });
+
+  // One promise, created once: a new one on every render would suspend for ever.
+  const consoleParams = Promise.resolve({ businessId: "b1" });
+
+  it.each([
+    ["staff", true],
+    ["owner", true],
+    ["customer", false],
+    ["admin", false],
+  ] as const)("the console of one business admits %s: %s", async (role, allowed) => {
+    owner(role);
+    render(
+      <Suspense fallback={null}>
+        <ConsolePage params={consoleParams} />
+      </Suspense>,
+    );
+    const refusal = "You don't have access to this page";
+    if (allowed) await waitFor(() => expect(screen.queryByText(refusal)).toBeNull());
+    else await screen.findByText(refusal);
   });
 
   // The guard lives in each page (its title must sit outside it), so a new page is protected

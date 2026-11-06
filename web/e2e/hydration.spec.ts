@@ -52,7 +52,7 @@ test("/b: after hydration the search works as usual", async ({ page }) => {
 });
 
 // Protected pages render only a skeleton on the server: nothing to press before hydration.
-for (const path of ["/me", "/ticket", "/ticket/00000000-0000-0000-0000-000000000000"]) {
+for (const path of ["/me", "/ticket", "/ticket/00000000-0000-0000-0000-000000000000", "/console", "/console/00000000-0000-0000-0000-000000000000"]) {
   test(`${path}: no enabled control before the page is interactive`, async ({ page }) => {
     await page.route("**/_next/static/chunks/*.js", (route) => route.abort());
     await page.goto(path);

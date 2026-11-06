@@ -13,7 +13,11 @@ import { countUntitled, expectTitle, noAxeViolations } from "./page-checks";
 test.describe.configure({ mode: "serial" });
 
 type Queue = { id: string; name: string; service: string; timezone: string; staff: { email: string; password: string } };
-const place = (project: string): Queue => JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).queues[project];
+const place = (project: string): Queue => {
+  const found = JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")).queues[project];
+  if (!found) throw new Error(`no queue business for ${project}: set E2E_BROWSERS to include it`);
+  return found;
+};
 
 let queue: Queue;
 let customer: BrowserContext;

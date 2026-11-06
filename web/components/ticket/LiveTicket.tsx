@@ -4,13 +4,14 @@ import { skipToken, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Alert } from "@/components/Alert";
+import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/Button";
 import { businessQuery } from "@/components/booking/BusinessDetail";
 import { DelayedSkeleton } from "@/components/booking/DelayedSkeleton";
 import { api } from "@/lib/api/client";
 import { leaveMessage } from "@/lib/api/errors";
 import type { Eta } from "@/lib/api/types";
-import { ENDED, ticketKey, useLiveTicket, type LiveStatus, type Ticket } from "@/lib/stream/useLiveTicket";
+import { ENDED, ticketKey, useLiveTicket, type Ticket } from "@/lib/stream/useLiveTicket";
 import { timeLabel } from "@/lib/time";
 
 export const ANNOUNCE_EVERY_MS = 20_000;
@@ -72,42 +73,6 @@ function StatusBadge({ status }: { status: string }) {
         {look.icon}
       </svg>
       {look.label}
-    </span>
-  );
-}
-
-/** Live (the word for 3 s after connecting, then a dot), Reconnecting…, Live (slow), Offline. */
-function StatusPill({ status, onRetry }: { status: LiveStatus; onRetry: () => void }) {
-  const [fresh, setFresh] = useState(true);
-  useEffect(() => {
-    if (status !== "live") return;
-    const timer = setTimeout(() => setFresh(false), 3000);
-    return () => {
-      clearTimeout(timer);
-      setFresh(true);
-    };
-  }, [status]);
-  if (status === "ended" || status === "gone") return null;
-  if (status === "live" && !fresh) {
-    return <span role="img" aria-label="Live" data-pill="live" className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--status-completed-fg)]" />;
-  }
-  const slow = status === "polling" || status === "capped";
-  const text = status === "live" ? "Live" : slow ? "Live (slow)" : status === "offline" ? "Offline — retrying" : "Reconnecting…";
-  const tone = status === "live" ? "completed" : status === "offline" ? "no-show" : "waiting";
-  return (
-    <span className="inline-flex items-center gap-2">
-      <span
-        data-pill={status}
-        className="inline-flex h-7 items-center rounded-full px-3 text-label font-medium"
-        style={{ color: `var(--status-${tone}-fg)`, background: `var(--status-${tone}-bg)` }}
-      >
-        {text}
-      </span>
-      {status === "offline" && (
-        <button type="button" onClick={onRetry} className="min-h-11 px-2 text-label text-primary underline">
-          Retry now
-        </button>
-      )}
     </span>
   );
 }

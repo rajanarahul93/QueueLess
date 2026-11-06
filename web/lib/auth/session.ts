@@ -1,5 +1,6 @@
 import { API_URL } from "@/lib/api/config";
 import type { components } from "@/lib/api/schema";
+import { forgetBusiness } from "@/lib/console/remember";
 import { abortAllStreams } from "@/lib/stream/registry";
 
 export type User = components["schemas"]["UserOut"];
@@ -45,6 +46,7 @@ function endSession(announce: boolean): void {
   session = null;
   generation += 1;
   abortAllStreams();
+  forgetBusiness(); // the console's remembered business belongs to the session
   listeners.forEach((listener) => listener(null));
   if (announce) channel?.postMessage({ type: "logout" } satisfies Message);
 }
