@@ -62,11 +62,30 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-/** One row. Only the fields listed here are ever rendered: no phone, no email, no ids. */
-export function QueueRow({ token, zone, now }: { token: SnapshotToken; zone: string; now: number }) {
+/** One row, as a real button: focusable, and chosen with Enter or Space like any other.
+ *  Only the fields listed here are ever rendered: no phone, no email, no ids. */
+export function QueueRow({
+  token,
+  zone,
+  now,
+  selected = false,
+  onSelect,
+}: {
+  token: SnapshotToken;
+  zone: string;
+  now: number;
+  selected?: boolean;
+  onSelect?: (id: string) => void;
+}) {
   const waited = waitedMinutes(token.joined_at, now);
   return (
-    <li className="rounded-md border border-border bg-surface p-4">
+    <li>
+      <button
+        type="button"
+        aria-pressed={selected}
+        onClick={() => onSelect?.(token.id)}
+        className={`block w-full rounded-md border bg-surface p-4 text-left ${selected ? "border-primary ring-2 ring-primary/40" : "border-border"}`}
+      >
       <div className="flex items-center justify-between gap-3">
         <span className="text-body-lg font-semibold">#{token.token_no}</span>
         <StatusBadge status={token.status} />
@@ -81,6 +100,7 @@ export function QueueRow({ token, zone, now }: { token: SnapshotToken; zone: str
           Waiting {waited} min · joined {timeLabel(token.joined_at, zone)} ({zone})
         </span>
       </div>
+      </button>
     </li>
   );
 }

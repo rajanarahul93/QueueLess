@@ -90,8 +90,8 @@ export default async function globalSetup() {
   const { zone: timezone, why } = queueZone(new Date());
   console.log(`e2e queue businesses use ${timezone}: ${why}`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `| queue zone ${timezone} (${why}) | - | info |\n`);
-  type Place = { id: string; name: string; service: string; timezone: string; staff: typeof staff };
-  async function queueBusiness(label: string, project: string): Promise<Place> {
+  type Place = { id: string; name: string; service: string; timezone: string; staff: typeof staff; staff2?: typeof staff };
+  async function queueBusiness(label: string, project: string, second = false): Promise<Place> {
     const desk = await post(
       "/v1/businesses",
       { name: `E2E ${label} ${project} ${stamp}`, category: "clinic", timezone, open_hours: everyDay },
@@ -104,7 +104,13 @@ export default async function globalSetup() {
     );
     const member = { ...staff, email: `e2e-${label.toLowerCase()}-${project}-${stamp}@example.test` };
     await post(`/v1/businesses/${desk.id}/staff`, { ...staffBody(member), name: `E2E ${label} Staff` }, token);
-    return { id: desk.id, name: desk.name, service: work.id, timezone, staff: member };
+    // A second member only where two staff must race each other (the console's own business).
+    let other: typeof staff | undefined;
+    if (second) {
+      other = { ...staff, email: `e2e-${label.toLowerCase()}2-${project}-${stamp}@example.test` };
+      await post(`/v1/businesses/${desk.id}/staff`, { ...staffBody(other), name: `E2E ${label} Staff 2` }, token);
+    }
+    return { id: desk.id, name: desk.name, service: work.id, timezone, staff: member, staff2: other };
   }
   const queues: Record<string, Place> = {};
   // The console's own business, so pausing, closing (final for the day) and removing its staff
@@ -112,7 +118,7 @@ export default async function globalSetup() {
   const consoles: Record<string, Place> = {};
   for (const project of browsers()) {
     queues[project] = await queueBusiness("Queue", project);
-    consoles[project] = await queueBusiness("Console", project);
+    consoles[project] = await queueBusiness("Console", project, true);
   }
   mkdirSync(join(__dirname, ".state"), { recursive: true });
   writeFileSync(
