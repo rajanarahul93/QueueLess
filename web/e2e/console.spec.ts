@@ -220,7 +220,17 @@ test("a staff call through the API moves the row within 2 s, and the service sho
   await expect(rows(page).first().getByText("In service")).toBeVisible();
 });
 
+/** Waits until the console is live before a test joins somebody as SET-UP. A stream open that
+ *  fails drops the page to polling (POLL_MS, 10 s in lib/stream/useLiveStream.ts), and a row
+ *  that arrives by the next poll instead of by a delta then misses a short wait: that is what
+ *  failed on main (run 42341168374). The tests that measure liveness do NOT use this: they are
+ *  meant to catch exactly that. */
+async function whenLive(): Promise<void> {
+  await expect(pill(page, "live")).toBeVisible();
+}
+
 test("the full flow on screen: Call next, Start with a service, Complete", async () => {
+  await whenLive();
   const joined = await joinOne();
   expect(joined.status).toBe(201);
   const number = joined.token_no!;
@@ -244,6 +254,7 @@ test("the full flow on screen: Call next, Start with a service, Complete", async
 });
 
 test("an appointment token offers no service picker", async () => {
+  await whenLive();
   // A booked appointment, checked in through the API, becomes an appointment token.
   const slot = await bookAndCheckIn();
   await expect(rowOf(page, slot.token_no)).toBeVisible();
@@ -379,6 +390,7 @@ test("staff B's primary is renamed by staff A's action, and a press inside the h
 });
 
 test("a customer leaving while staff calls: one wins and both screens agree", async () => {
+  await whenLive();
   const joined = await joinOne();
   const number = joined.token_no!;
   await expect(rowOf(page, number)).toBeVisible();
@@ -419,6 +431,7 @@ test("skip twice, then the third press is a labelled No-show with a confirmation
 });
 
 test("a priority change moves the row", async () => {
+  await whenLive();
   const first = await joinOne();
   const second = await joinOne();
   await expect(rowOf(page, second.token_no!)).toBeVisible();
