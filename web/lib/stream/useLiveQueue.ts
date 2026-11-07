@@ -47,9 +47,11 @@ type Delta = {
 };
 
 function applyDelta(snapshot: QueueSnapshot, data: Delta): QueueSnapshot {
+  const before = snapshot.tokens.find((token) => token.id === data.token_id);
+  // Never go backwards: a replayed event, or one that overtook a newer one, is already old news.
+  if (before && data.version < before.version) return snapshot;
   const tokens = snapshot.tokens.filter((token) => token.id !== data.token_id);
   if (GONE.includes(data.status)) return { ...snapshot, tokens };
-  const before = snapshot.tokens.find((token) => token.id === data.token_id);
   const row: SnapshotToken = {
     id: data.token_id,
     token_no: data.token_no,
@@ -83,6 +85,9 @@ export function useLiveQueue(queueId: string) {
   const queryClient = useQueryClient();
   const snapshot = useQuery<QueueSnapshot>({ queryKey: queueKey(queueId), queryFn: skipToken, staleTime: Infinity }).data;
   const [access, setAccess] = useState<QueueAccess>("ok");
+  // The snapshot holds active tokens only, so the status a token ENDED on is known just once:
+  // in the delta that removed it. Kept here so the console can say what became of it.
+  const ended = useRef(new Map<string, string>());
   const refetchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const refetching = useRef(false);
   const stopped = useRef(false);
@@ -107,10 +112,32 @@ export function useLiveQueue(queueId: string) {
     [queueId],
   );
 
+  /** A read can answer with data older than what this screen already applied (an action that
+   *  landed after the read was sent). Keep whichever version of each token is newer, so the
+   *  list never goes backwards and nothing looks like someone else's change. */
   const write = useCallback(
-    (next: QueueSnapshot) => queryClient.setQueryData<QueueSnapshot>(queueKey(queueId), next),
+    (next: QueueSnapshot) =>
+      queryClient.setQueryData<QueueSnapshot>(queueKey(queueId), (prev) => {
+        if (!prev) return next;
+        const have = new Map(prev.tokens.map((token) => [token.id, token]));
+        return {
+          ...next,
+          tokens: next.tokens.map((token) => {
+            const mine = have.get(token.id);
+            return mine && mine.version > token.version ? mine : token;
+          }),
+        };
+      }),
     [queryClient, queueId],
   );
+
+  /** Read the snapshot now and write it, bypassing the throttle: used after a conflict, where
+   *  the staff member is waiting to see the truth. */
+  const refresh = useCallback(async () => {
+    const fresh = await read();
+    if (fresh === "gone") setAccess("ended");
+    else if (typeof fresh !== "string") write(fresh);
+  }, [read, write]);
 
   /** One refetch per 2 s window, after the burst. Never two at once. */
   const scheduleRefetch = useCallback(() => {
@@ -198,12 +225,15 @@ export function useLiveQueue(queueId: string) {
         queryClient.setQueryData<QueueSnapshot>(queueKey(queueId), (prev) => (prev && typeof to === "string" ? { ...prev, status: to } : prev));
         return;
       }
-      queryClient.setQueryData<QueueSnapshot>(queueKey(queueId), (prev) => (prev ? applyDelta(prev, data as unknown as Delta) : prev));
+      const delta = data as unknown as Delta;
+      if (GONE.includes(delta.status)) ended.current.set(delta.token_id, delta.status);
+      queryClient.setQueryData<QueueSnapshot>(queueKey(queueId), (prev) => (prev ? applyDelta(prev, delta) : prev));
       scheduleRefetch();
     },
     [queryClient, queueId, scheduleRefetch, write],
   );
 
   const { status, retry } = useLiveStream({ prepare, poll, onEvent, deps: [queueId, queryClient] });
-  return { snapshot, status, access, retry };
+  const endedStatusOf = useCallback((tokenId: string) => ended.current.get(tokenId), []);
+  return { snapshot, status, access, retry, refresh, endedStatusOf };
 }

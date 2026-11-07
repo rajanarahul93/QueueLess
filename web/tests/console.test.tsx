@@ -314,7 +314,8 @@ describe("what the console remembers", () => {
   it("a deep link to a business that is not in the list remembers nothing", async () => {
     serveConsole();
     show(<QueueConsole businessId="someone-elses" />);
-    expect(await screen.findByRole("heading", { name: "Your access to this business has ended" })).toBeTruthy();
+    // A business that was never ours reads neutrally (6D-2); "access has ended" is for one taken away.
+    expect(await screen.findByRole("heading", { name: "You don't have access to this business." })).toBeTruthy();
     expect(rememberedBusiness()).toBeNull();
   });
 });

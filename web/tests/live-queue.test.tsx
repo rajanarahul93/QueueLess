@@ -190,6 +190,46 @@ describe("useLiveQueue", () => {
     expect(snapshot()!.tokens[0].priority).toBe(0);
   });
 
+  it("ignores a delta older than the token it already has", async () => {
+    tokens = [row({ status: "called", version: 5 })];
+    await live();
+    expect(snapshot()!.tokens[0].version).toBe(5);
+    // A replayed or overtaken event: the same token, an older version.
+    streams[0].send(frame("token.called", delta({ id: 20, data: { ...delta().data, status: "waiting", version: 4 } }), 20));
+    await tick();
+    expect(snapshot()!.tokens[0]).toMatchObject({ status: "called", version: 5 });
+  });
+
+  it("a read that answers with older data does not undo what is already applied", async () => {
+    tokens = [row({ status: "waiting", version: 3 })];
+    const hook = await live();
+    // The action's own result lands in the cache (a newer version than the server read gives).
+    act(() => {
+      client.setQueryData<QueueSnapshot>(queueKey("q1"), (prev) =>
+        prev ? { ...prev, tokens: [{ ...prev.tokens[0], status: "called", version: 7 }] } : prev,
+      );
+    });
+    streams[0].close(); // forces a reconnect, which re-reads the snapshot (still version 3)
+    await tick(6000);
+    expect(snapshot()!.tokens[0]).toMatchObject({ status: "called", version: 7 });
+    expect(hook.result.current.snapshot?.tokens[0].version).toBe(7);
+  });
+
+  it("a token the snapshot no longer lists is removed, however new the cached copy is", async () => {
+    tokens = [row({ status: "called", version: 3 })];
+    await live();
+    // The screen applied something newer than the server read will answer with...
+    act(() => {
+      client.setQueryData<QueueSnapshot>(queueKey("q1"), (prev) =>
+        prev ? { ...prev, tokens: [{ ...prev.tokens[0], status: "in_service", version: 9 }] } : prev,
+      );
+    });
+    tokens = []; // ...and then it left the queue (completed, no-show, cancelled).
+    streams[0].close(); // forces a reconnect, which re-reads the snapshot
+    await tick(6000);
+    expect(snapshot()!.tokens).toEqual([]);
+  });
+
   it("drops an event for another queue", async () => {
     await live();
     streams[0].send(frame("token.called", delta({ queue_id: "other", id: 8 }), 8));
