@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { addDays, dayButtonName, dayLabel, localToday } from "../lib/time";
 import { ACCOUNTS_FILE } from "./global-setup";
 import { API_URL, insertAppointments, otpCodeFor, uniquePhone } from "./local-stack";
@@ -106,8 +106,66 @@ test("a signed-in customer sees upcoming appointments in the business's time", a
   await noAxeViolations(page, "/me (upcoming)");
 });
 
+
+/** Records what the browser does with focus around the cancel, into `window.__focusLog`.
+ *  Why: main run 42480002263 attempt 3 failed the focus check here in CI — the "Cancelled"
+ *  notice was present but never focused — and about 30 instrumented cancels locally could not
+ *  reproduce it, so the next occurrence has to explain itself. Test-only; it records, it never
+ *  changes what the page does. */
+function recordFocus(): void {
+  const window_ = window as unknown as { __focusLog?: string[] };
+  if (window_.__focusLog) return; // once per document
+  const log: string[] = [];
+  window_.__focusLog = log;
+  const note = (entry: string) => {
+    if (log.length < 200) log.push(`${performance.now().toFixed(1)} ${entry}`);
+  };
+  const describe = (node: Element | null): string => {
+    if (!node) return "none";
+    const text = (node.textContent ?? "").trim().slice(0, 40);
+    return `${node.tagName.toLowerCase()}[role=${node.getAttribute("role") ?? "-"}] "${text}"`;
+  };
+  for (const type of ["focusin", "focusout"]) {
+    document.addEventListener(type, (event) => note(`${type} ${describe(event.target as Element)}`), true);
+  }
+  const watched = (node: Node) => node instanceof Element && (node.textContent ?? "").includes("Cancelled");
+  new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) if (watched(node)) note(`added ${describe(node as Element)}`);
+      for (const node of record.removedNodes) if (watched(node)) note(`removed ${describe(node as Element)}`);
+      if (record.type === "attributes" && record.target instanceof HTMLDialogElement) {
+        note(`dialog ${record.target.open ? "open" : "closed"}`);
+      }
+    }
+  }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["open"] });
+}
+
+/** Everything that could explain a notice that is present but not focused. */
+async function focusDiagnostics(page: Page): Promise<string> {
+  const seen = await page.evaluate(() => {
+    const node = document.activeElement as HTMLElement | null;
+    const describe = (item: Element | null) =>
+      item ? `${item.tagName.toLowerCase()}[role=${item.getAttribute("role") ?? "-"}] "${(item.textContent ?? "").trim().slice(0, 40)}"` : "none";
+    const statuses = [...document.querySelectorAll('[role="status"]')];
+    return {
+      activeElement: describe(node),
+      activeIsBody: node === document.body,
+      statusCount: statuses.length,
+      statusTexts: statuses.map((item) => (item.textContent ?? "").trim().slice(0, 60)),
+      noticeConnected: statuses.some((item) => (item.textContent ?? "").includes("Cancelled") && item.isConnected),
+      visibilityState: document.visibilityState,
+      hasFocus: document.hasFocus(),
+      focusLog: (window as unknown as { __focusLog?: string[] }).__focusLog ?? [],
+    };
+  });
+  return JSON.stringify(seen, null, 2);
+}
+
 test("cancel asks first; Esc keeps it; a double click cancels once", async () => {
   const page = customer.pages()[0];
+  // The recorder goes in for this test only: on the live page, and on any later navigation.
+  await page.addInitScript(recordFocus);
+  await page.evaluate(recordFocus);
   const cancel = page.getByRole("button", { name: `Cancel ${label("10:00 AM")}` });
   await cancel.click();
   const dialog = page.getByRole("dialog", { name: "Cancel this appointment?" });
@@ -129,7 +187,16 @@ test("cancel asks first; Esc keeps it; a double click cancels once", async () =>
   await dialog.getByRole("button", { name: "Cancel appointment" }).dblclick();
   const done = page.getByRole("status").filter({ hasText: "Cancelled" });
   await expect(done).toHaveText(`Cancelled ${label("10:00 AM")}.`);
-  await expect(done).toBeFocused();
+  try {
+    await expect(done).toBeFocused();
+  } catch (failure) {
+    // The assertion above is unchanged; this only says what the browser did before it failed.
+    // Written as a FILE so it travels with the traces CI uploads from web/test-results.
+    const where = test.info().outputPath("focus-diagnostics.json");
+    writeFileSync(where, await focusDiagnostics(page));
+    await test.info().attach("focus-diagnostics", { path: where, contentType: "application/json" });
+    throw failure;
+  }
   await page.unrouteAll({ behavior: "wait" });
   expect(deletes).toHaveLength(1);
   await expect(upcoming(page).getByText(label("10:00 AM"))).toHaveCount(0);
