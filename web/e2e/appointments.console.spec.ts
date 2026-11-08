@@ -49,9 +49,10 @@ async function signIn(context: BrowserContext, who: Person): Promise<Page> {
   await signed.getByLabel("Email").fill(who.email);
   await signed.getByLabel("Password").fill(who.password);
   await signed.getByRole("button", { name: "Sign in" }).click();
-  // A member of one business lands on its console by itself; waiting for that landing keeps a
-  // later goto from racing the redirect.
-  await expect(signed).toHaveURL(/\/console/);
+  // A member of one business lands on the picker, which then replaces the URL with that
+  // business's console. Waiting for the FINAL landing (/console/<id>, not /console) keeps a
+  // later goto from being interrupted by that replace.
+  await expect(signed).toHaveURL(new RegExp(`/console/${queue.id}$`));
   return signed;
 }
 
