@@ -11,7 +11,9 @@ export function DelayedSkeleton({ rows }: { rows: number }) {
   }, []);
   if (!shown) return null;
   return (
-    <div aria-busy="true" aria-label="Loading" className="space-y-2">
+    // role="status": a plain div is `generic`, which may not carry a label at all (axe's
+    // aria-prohibited-attr), and a loading indicator is exactly what status is for.
+    <div role="status" aria-busy="true" aria-label="Loading" className="space-y-2">
       {Array.from({ length: rows }, (_, index) => (
         <div key={index} className="h-16 rounded-md bg-border" />
       ))}

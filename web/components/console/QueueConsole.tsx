@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "@/components/Alert";
 import { StatusPill } from "@/components/StatusPill";
@@ -38,7 +39,7 @@ function QueueHeader({
   said,
 }: {
   name: string;
-  queue: { id: string; status: string };
+  queue: { id: string; status: string; businessId: string };
   waiting: number;
   serving: string | null;
   counts: { completed: number; no_show: number; cancelled: number };
@@ -61,6 +62,9 @@ function QueueHeader({
         >
           {QUEUE_STATUS_TEXT[queue.status] ?? queue.status}
         </span>
+        <Link href={`/console/${queue.businessId}/appointments`} className="min-h-11 px-2 text-label text-primary underline">
+          Appointments today
+        </Link>
         <Link href="/console" className="min-h-11 px-2 text-label text-primary underline">
           Switch business
         </Link>
@@ -88,6 +92,7 @@ function QueueHeader({
 /** The live part, mounted only once today's queue id is known: the stream never opens on a
  *  half-loaded page, where a request for queue "" would look like lost access. */
 function LiveQueue({ queueId, business }: { queueId: string; business: MyBusiness }) {
+  const linked = useSearchParams();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), WAIT_TICK_MS);
@@ -107,7 +112,10 @@ function LiveQueue({ queueId, business }: { queueId: string; business: MyBusines
   const { run, busy, slow, error } = useAction(queueId, refresh, held);
   // This tab's own memory: which row is selected, which token it called last, and the one line
   // the staff member reads. None of it is stored anywhere.
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // "Open in queue" on the appointments page links here with ?token=; the router's own reader
+  // is what sees it, because during a client navigation the browser's URL is updated after the
+  // new page has rendered. Read once: a later deselect must stick.
+  const [selectedId, setSelectedId] = useState<string | null>(() => linked.get("token"));
   const [lastCalledId, setLastCalledId] = useState<string | null>(null);
   const [said, setSaid] = useState("");
   const tokens = useMemo(() => snapshot?.tokens ?? [], [snapshot]);
@@ -187,7 +195,7 @@ function LiveQueue({ queueId, business }: { queueId: string; business: MyBusines
     <section className="mx-auto max-w-[640px] px-4 py-8">
       <QueueHeader
         name={business.name}
-        queue={{ id: snapshot.id, status: snapshot.status }}
+        queue={{ id: snapshot.id, status: snapshot.status, businessId: business.id }}
         waiting={waiting}
         serving={serving ? `#${serving.token_no} ${serving.customer.name}` : null}
         counts={snapshot.counts}

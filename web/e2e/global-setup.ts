@@ -104,7 +104,7 @@ export default async function globalSetup() {
     );
     const member = { ...staff, email: `e2e-${label.toLowerCase()}-${project}-${stamp}@example.test` };
     await post(`/v1/businesses/${desk.id}/staff`, { ...staffBody(member), name: `E2E ${label} Staff` }, token);
-    // A second member only where two staff must race each other (the console's own business).
+    // A second member only where two staff must race each other.
     let other: typeof staff | undefined;
     if (second) {
       other = { ...staff, email: `e2e-${label.toLowerCase()}2-${project}-${stamp}@example.test` };
@@ -116,9 +116,13 @@ export default async function globalSetup() {
   // The console's own business, so pausing, closing (final for the day) and removing its staff
   // member cannot disturb the queue the customer specs share.
   const consoles: Record<string, Place> = {};
+  const appointments: Record<string, Place> = {};
   for (const project of browsers()) {
     queues[project] = await queueBusiness("Queue", project);
     consoles[project] = await queueBusiness("Console", project, true);
+    // Its own business: this spec fills today's grid with cloned appointments, which would
+    // leave the console spec without a free slot to book.
+    appointments[project] = await queueBusiness("Appts", project, true);
   }
   mkdirSync(join(__dirname, ".state"), { recursive: true });
   writeFileSync(
@@ -130,6 +134,7 @@ export default async function globalSetup() {
       cutoff: { id: strict.id, name: strict.name, service: strictService.id },
       queues,
       consoles,
+      appointments,
     }),
   );
 }

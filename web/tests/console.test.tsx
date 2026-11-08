@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SnapshotToken } from "@/lib/api/types";
 
 const replace = vi.fn();
-vi.mock("next/navigation", () => ({ useRouter: () => ({ replace }), usePathname: () => "/console" }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace }), usePathname: () => "/console", useSearchParams: () => new URLSearchParams(window.location.search) }));
 
 const { consoleOrder, QueueRow } = await import("@/components/console/QueueRows");
 const { StatusMenu, SLOW_PRESS_MS } = await import("@/components/console/StatusMenu");
