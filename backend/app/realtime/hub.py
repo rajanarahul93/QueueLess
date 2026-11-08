@@ -154,10 +154,25 @@ class Hub:
         future = self._cache.get(key)
         if future is None:
             future = asyncio.get_running_loop().create_task(compute())
+            # A load nobody is left to read must not stay behind as a cancelled or failed
+            # entry; the callback also reads such a load's exception, which would otherwise
+            # surface as "Task exception was never retrieved".
+            future.add_done_callback(lambda done: self._forget(key, done))
             self._cache[key] = future
             while len(self._cache) > CACHE_SIZE:
                 self._cache.pop(next(iter(self._cache)))
-        return await future
+        # Shielded: a client going away (a closed tab, a stream at its lifetime) cancels only
+        # that waiter, never the shared load the other clients are still waiting for.
+        return await asyncio.shield(future)
+
+    def _forget(self, key: tuple[Any, ...], done: asyncio.Future[Any]) -> None:
+        """Drop a load that ended badly, so the next caller runs it again. How it ended is read
+        first, before any early return: a load the cap already evicted has no waiter left, and
+        nobody else reads it, which Python reports as an exception never retrieved. Only this
+        very load is dropped, so a newer one for the same key is never evicted by it."""
+        ended_badly = done.cancelled() or done.exception() is not None
+        if ended_badly and self._cache.get(key) is done:
+            del self._cache[key]
 
     async def _run(self) -> None:
         await self._reconnect()

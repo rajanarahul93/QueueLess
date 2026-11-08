@@ -237,12 +237,17 @@ test("a real API restart: reconnecting, then live again", async () => {
 
 test("two stream failures: polling every 10 s ('Live (slow)'), and an update arrives by polling", async () => {
   const page = customer.pages()[0];
+  // The document this page is about to replace reconnects when its stream ends (20 s on this
+  // stack), and a context route sees that attempt too, so the old document goes first: the
+  // count then belongs to the new one alone.
+  const ticketUrl = page.url();
+  await page.goto("about:blank");
   let failed = 0;
   await customer.route("**/v1/tokens/*/stream?*", (route) => {
     failed += 1;
     return route.fulfill({ status: 500, body: "{}" });
   });
-  await page.reload();
+  await page.goto(ticketUrl);
   await expect(pill(page, "polling")).toHaveText("Live (slow)");
   expect(failed).toBe(2);
   await noAxeViolations(page, "/ticket/[id] (polling)");
