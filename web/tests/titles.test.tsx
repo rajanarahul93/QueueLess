@@ -53,6 +53,7 @@ describe("page titles", () => {
     "app/(owner)/owner/page.tsx": "<title>Your business · QueueLess</title>",
     "app/(staff)/console/page.tsx": "<title>Choose a business · QueueLess</title>",
     "app/(staff)/console/[businessId]/page.tsx": "<title>Queue console · QueueLess</title>",
+    "app/(staff)/console/[businessId]/appointments/page.tsx": "<title>Appointments today · QueueLess</title>",
   };
 
   it("every page renders its own title, outside the sign-in guard", () => {

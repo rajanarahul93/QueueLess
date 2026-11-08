@@ -2,16 +2,17 @@
   "/": 144.7,
   "/b": 151.5,
   "/b/[id]": 151.9,
-  "/b/[id]/book": 154.2,
+  "/b/[id]/book": 154.4,
   "/console": 151,
-  "/console/[businessId]": 159.2,
+  "/console/[businessId]": 161.3,
+  "/console/[businessId]/appointments": 159,
   "/login": 149.2,
-  "/me": 154.9,
-  "/me/reschedule/[id]": 158.7,
+  "/me": 155.1,
+  "/me/reschedule/[id]": 159,
   "/no-access": 144.7,
   "/owner": 145.6,
   "/register": 148.2,
   "/signin": 148.2,
   "/ticket": 153.2,
-  "/ticket/[id]": 156.5
+  "/ticket/[id]": 156.7
 }

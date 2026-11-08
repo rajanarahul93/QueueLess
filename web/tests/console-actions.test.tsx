@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QueueSnapshot, SnapshotToken } from "@/lib/api/types";
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }), usePathname: () => "/console" }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }), usePathname: () => "/console", useSearchParams: () => new URLSearchParams(window.location.search) }));
 
 const { ActionBar } = await import("@/components/console/ActionBar");
 const { TokenDetail } = await import("@/components/console/TokenDetail");

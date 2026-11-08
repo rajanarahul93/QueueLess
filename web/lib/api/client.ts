@@ -20,6 +20,9 @@ export type RequestOptions = {
   idempotencyKey?: string;
   /** Send the access token and refresh once on a 401. Off for the auth endpoints. */
   auth?: boolean;
+  /** The response status, for the few endpoints whose 200 and 201 mean different things
+   *  (check-in: 201 created it, 200 found the one that was already there). */
+  onStatus?: (status: number) => void;
   signal?: AbortSignal;
 };
 
@@ -63,8 +66,14 @@ export async function toApiError(response: Response): Promise<ApiError> {
 
 /** Sends with this action's key. A duplicate still in progress (the same key racing itself) is
  *  retried once, with the same key, after Retry-After. */
-export async function sendKeyed<T>(path: string, method: "POST" | "PATCH", body: object | undefined, key: string): Promise<T> {
-  const send = () => api<T>(path, { method, body, idempotencyKey: key });
+export async function sendKeyed<T>(
+  path: string,
+  method: "POST" | "PATCH",
+  body: object | undefined,
+  key: string,
+  onStatus?: (status: number) => void,
+): Promise<T> {
+  const send = () => api<T>(path, { method, body, idempotencyKey: key, onStatus });
   try {
     return await send();
   } catch (error) {
@@ -86,6 +95,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     if (session) response = await send(path, options, session.accessToken);
   }
   if (!response.ok) throw await toApiError(response);
+  options.onStatus?.(response.status);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }

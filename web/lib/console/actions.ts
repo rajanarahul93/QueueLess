@@ -16,7 +16,7 @@ export const PRIMARY_HOLD_MS = 700;
 
 /** Does this change of the primary button deserve a hold? Only a change of KIND, caused by data
  *  that arrived rather than by this user's own press, and never the first render. */
-export function holdOnChange(previous: Primary | null, next: Primary, ownPress: boolean): boolean {
+export function holdOnChange<Kind extends string>(previous: Kind | null, next: Kind, ownPress: boolean): boolean {
   if (previous === null) return false; // first render, first load
   if (previous === next) return false; // a version bump, a priority or count change
   return !ownPress;
