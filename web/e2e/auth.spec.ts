@@ -107,7 +107,8 @@ test("staff and owner sign in with email and land on their screens", async ({ br
   // straight away (6D-1); the owner still lands on their own screen.
   for (const [role, home, heading] of [
     ["staff", /\/console\/[0-9a-f-]{36}$/, "E2E Clinic"],
-    ["owner", /\/owner$/, /Signed in as/],
+    // 6E-1 replaced the owner placeholder with the hub, which names itself.
+    ["owner", /\/owner$/, "Your business"],
   ] as const) {
     const context = await browser.newContext();
     const page = await context.newPage();
@@ -142,5 +143,9 @@ test("an owner registers and is signed in", async ({ page }) => {
   await page.getByLabel(/Password/).fill("a-long-password-1");
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/owner$/);
-  await expect(page.getByRole("heading", { name: "Signed in as New Owner" })).toBeVisible();
+  // 6E-1 replaced the owner placeholder, which greeted the new owner by name, with the hub:
+  // a brand-new owner has nothing yet, so the empty state is the proof the guarded page loaded.
+  await expect(page.getByRole("heading", { level: 1, name: "Your business" })).toBeVisible();
+  await expect(page.getByText("You have no business yet.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
 });
