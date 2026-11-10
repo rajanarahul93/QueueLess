@@ -8,6 +8,7 @@ const replace = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace }),
   usePathname: () => "/owner",
+  useSearchParams: () => new URLSearchParams(window.location.search),
 }));
 
 let auth: { status: string; user: { role: string; name: string } | null };
@@ -46,7 +47,8 @@ describe("RequireRole", () => {
   });
 
   it.each([
-    ["owner", OwnerPage, "Signed in as N", ["owner"], ["customer", "staff", "admin"]],
+    // 6E-1 replaced the placeholder page; the heading is what the owner hub renders now.
+    ["owner", OwnerPage, "Your business", ["owner"], ["customer", "staff", "admin"]],
     ["staff", StaffPage, "Choose a business", ["staff", "owner"], ["customer", "admin"]],
     ["customer", CustomerPage, "Your tickets", ["customer"], ["staff", "owner", "admin"]],
   ] as const)("the %s routes admit only their roles", (_, Page, inside, allowed, refused) => {

@@ -124,11 +124,17 @@ export default async function globalSetup() {
     // leave the console spec without a free slot to book.
     appointments[project] = await queueBusiness("Appts", project, true);
   }
+  // A second owner with NO business of their own: the 6E specs create one through the screen,
+  // and a fresh owner is the only way to see the empty hub. One register, no business.
+  const fresh = { email: `e2e-owner2-${stamp}@example.test`, password: crypto.randomUUID() };
+  await post("/v1/auth/register", { name: "E2E Owner Two", ...fresh });
+
   mkdirSync(join(__dirname, ".state"), { recursive: true });
   writeFileSync(
     ACCOUNTS_FILE,
     JSON.stringify({
       owner,
+      fresh,
       staff,
       booking: { id: clinic.id, name: clinic.name, service: service.id },
       cutoff: { id: strict.id, name: strict.name, service: strictService.id },

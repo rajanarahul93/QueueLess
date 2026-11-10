@@ -303,3 +303,14 @@ test("the access-ended and not-yours copy", async () => {
   await expect(page.getByRole("heading", { name: "You don't have access to this business." })).toBeVisible();
   await noAxeViolations(page, "/console/[id]/appointments (not yours)");
 });
+
+// 6E-1: this spec's staff member is already signed in, so the owner-screen refusal costs none
+// of the 20 logins an IP gets every 15 minutes. Last in the file: nothing after it needs `page`.
+test("the owner screens refuse a staff member", async () => {
+  for (const path of ["/owner", "/owner/new"]) {
+    await page.goto(path);
+    await expect(page.getByText("You don't have access to this page")).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Your business" })).toHaveCount(0);
+  }
+  await noAxeViolations(page, "/owner (staff refused)");
+});

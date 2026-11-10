@@ -245,3 +245,16 @@ test("signed out, Join leads to sign-in and back; staff are told it is for custo
   await noAxeViolations(desk, "/b/[id] (staff)");
   await member.close();
 });
+
+// 6E-1: this spec's customer is already signed in and its context lives until afterAll, so the
+// owner-screen refusal costs no sign-in of its own (a job is at the cap of 20 logins per IP
+// every 15 minutes). Last in the file: nothing after it needs this context.
+test("the owner screens refuse a customer", async () => {
+  const page = customer.pages()[0];
+  for (const path of ["/owner", "/owner/new"]) {
+    await page.goto(path);
+    await expect(page.getByText("You don't have access to this page")).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Your business" })).toHaveCount(0);
+  }
+  await noAxeViolations(page, "/owner (customer refused)");
+});
