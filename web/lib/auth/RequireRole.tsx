@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
+import { Button } from "@/components/Button";
 import { NoAccess } from "@/components/NoAccess";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { useAuth } from "@/lib/auth/AuthProvider";
@@ -18,7 +19,7 @@ export function RequireRole({
   signInPath: string;
   children: ReactNode;
 }) {
-  const { status, user } = useAuth();
+  const { status, user, retry } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -30,6 +31,17 @@ export function RequireRole({
     }
   }, [status, router, signInPath, pathname]);
 
+  // Unreachable is not signed out: the session may well be fine, so nobody is sent to sign in.
+  if (status === "unreachable") {
+    return (
+      <section className="mx-auto max-w-[480px] px-4 py-12 text-center">
+        <p className="text-body">We can&apos;t reach QueueLess. Check your connection.</p>
+        <Button type="button" className="mt-4" onClick={retry}>
+          Retry
+        </Button>
+      </section>
+    );
+  }
   if (status !== "signed-in" || !user) return <PageSkeleton />;
   if (!roles.includes(user.role)) return <NoAccess />;
   return <>{children}</>;

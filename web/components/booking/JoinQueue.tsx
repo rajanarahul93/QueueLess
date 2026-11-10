@@ -14,7 +14,7 @@ import { ProblemAlert, useTakeTicket } from "@/lib/useTakeTicket";
 export function JoinQueue({ businessId }: { businessId: string }) {
   const { status, user } = useAuth();
   const { take, busy, wait, problem } = useTakeTicket(businessId, (failure) => ({ text: ticketMessage(failure) }));
-  if (status === "loading") return null;
+  if (status === "loading" || status === "unreachable") return null; // nothing to offer until the session is known
 
   return (
     <section aria-labelledby="walk-in" className="mt-8">
