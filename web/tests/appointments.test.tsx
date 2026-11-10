@@ -164,6 +164,44 @@ describe("My appointments", () => {
     expect(deletes()).toHaveLength(0);
   });
 
+  it("a close event that arrives after the notice is focused leaves it focused", async () => {
+    renderWith(<MyAppointments />);
+    const cancel = await screen.findByRole("button", { name: "Cancel Checkup on Mon, Jan 7 at 9:00 AM" });
+    // Hold the list refetch, so the Cancel button is still on the page when the close event
+    // arrives: in the browser the refetch removed it 6 ms after the restore had focused it.
+    const stubbed = globalThis.fetch as typeof fetch;
+    vi.stubGlobal("fetch", (async (input: string, init?: RequestInit) =>
+      String(input).includes("/v1/appointments?") ? new Promise<Response>(() => {}) : stubbed(input, init)) as unknown as typeof fetch);
+    await userEvent.click(cancel);
+    const dialog = screen.getByRole("dialog", { name: "Cancel this appointment?" });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel appointment" }));
+    });
+    const done = await screen.findByRole("status");
+    expect(document.activeElement).toBe(done);
+    expect(cancel.isConnected).toBe(true); // the invoker the restore would jump to is still there
+    // A real browser dispatches `close` as its own task, so the handler can run AFTER React has
+    // committed the notice and focused it (seen in CI: the restore landed 4 ms later and the
+    // refetch then removed the button it had focused, leaving focus on the body).
+    await act(async () => {
+      dialog.dispatchEvent(new Event("close"));
+    });
+    expect(document.activeElement).toBe(done);
+  });
+
+  it("a close event with focus nowhere still returns it to the opener", async () => {
+    renderWith(<MyAppointments />);
+    const cancel = await screen.findByRole("button", { name: "Cancel Checkup on Mon, Jan 7 at 9:00 AM" });
+    await userEvent.click(cancel);
+    const dialog = screen.getByRole("dialog", { name: "Cancel this appointment?" });
+    (document.activeElement as HTMLElement | null)?.blur(); // focus parked on the body
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      dialog.dispatchEvent(new Event("close"));
+    });
+    expect(document.activeElement).toBe(cancel);
+  });
+
   it("a double click on Cancel appointment sends ONE request, then says what was cancelled", async () => {
     renderWith(<MyAppointments />);
     await userEvent.click(await screen.findByRole("button", { name: "Cancel Checkup on Mon, Jan 7 at 9:00 AM" }));

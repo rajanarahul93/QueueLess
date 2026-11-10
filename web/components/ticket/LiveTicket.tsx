@@ -10,6 +10,7 @@ import { businessQuery } from "@/components/booking/BusinessDetail";
 import { DelayedSkeleton } from "@/components/booking/DelayedSkeleton";
 import { api } from "@/lib/api/client";
 import { leaveMessage } from "@/lib/api/errors";
+import { returnFocus } from "@/lib/focus";
 import type { Eta } from "@/lib/api/types";
 import { ENDED, ticketKey, useLiveTicket, type Ticket } from "@/lib/stream/useLiveTicket";
 import { timeLabel } from "@/lib/time";
@@ -242,7 +243,7 @@ export function LiveTicket({ id }: { id: string }) {
       <dialog
         ref={dialog}
         aria-labelledby="leave-title"
-        onClose={() => leaveButton.current?.isConnected && leaveButton.current.focus()}
+        onClose={() => returnFocus(leaveButton.current, dialog.current)}
         className="m-auto w-[calc(100%-2rem)] max-w-[420px] rounded-lg border border-border bg-surface p-6 text-text shadow-2 backdrop:bg-black/40"
       >
         <h2 id="leave-title" className="text-h2 font-semibold">

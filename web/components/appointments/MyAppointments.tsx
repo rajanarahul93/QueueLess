@@ -9,6 +9,7 @@ import { businessQuery } from "@/components/booking/BusinessDetail";
 import { DelayedSkeleton } from "@/components/booking/DelayedSkeleton";
 import { api, ApiError, sendKeyed } from "@/lib/api/client";
 import { errorMessage, ticketMessage } from "@/lib/api/errors";
+import { returnFocus } from "@/lib/focus";
 import type { Appointment, AppointmentPage, Business, Token } from "@/lib/api/types";
 import { dayLabel, localToday, timeLabel } from "@/lib/time";
 import { ProblemAlert, useTakeTicket } from "@/lib/useTakeTicket";
@@ -242,7 +243,7 @@ export function MyAppointments() {
       <dialog
         ref={dialog}
         aria-labelledby="cancel-title"
-        onClose={() => trigger.current?.isConnected && trigger.current.focus()}
+        onClose={() => returnFocus(trigger.current, dialog.current)}
         className="m-auto w-[calc(100%-2rem)] max-w-[420px] rounded-lg border border-border bg-surface p-6 text-text shadow-2 backdrop:bg-black/40"
       >
         <h2 id="cancel-title" className="text-h2 font-semibold">
