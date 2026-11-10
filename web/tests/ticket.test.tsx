@@ -183,6 +183,37 @@ describe("the live ticket", () => {
     expect(polite().textContent).toBe("You're next");
   });
 
+  it("called while the leave dialog is open: a late close keeps focus on the turn heading", async () => {
+    // The Leave button is still on the page while the ticket is called, so an unconditional
+    // restore in the close handler has somewhere to jump to - and it would take focus off the
+    // one announcement that matters.
+    const { update } = show();
+    await userEvent.click(screen.getByRole("button", { name: "Leave the queue" }));
+    const dialog = screen.getByRole("dialog", { name: "Leave the queue?" });
+    update({ ticket: { ...WAITING, status: "called", ahead_count: null, next: true, eta: null } });
+    const heading = screen.getByRole("heading", { name: "It's your turn" });
+    expect(document.activeElement).toBe(heading);
+    expect(screen.getByRole("button", { name: "Leave the queue" }).isConnected).toBe(true);
+    // A real browser dispatches `close` as its own task, after React has committed the call.
+    await act(async () => {
+      dialog.dispatchEvent(new Event("close"));
+    });
+    expect(document.activeElement).toBe(heading);
+  });
+
+  it("leave: a late close with focus nowhere returns it to the Leave button", async () => {
+    show();
+    const leave = screen.getByRole("button", { name: "Leave the queue" });
+    await userEvent.click(leave);
+    const dialog = screen.getByRole("dialog", { name: "Leave the queue?" });
+    (document.activeElement as HTMLElement | null)?.blur(); // focus parked on the body
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      dialog.dispatchEvent(new Event("close"));
+    });
+    expect(document.activeElement).toBe(leave);
+  });
+
   it("leave: Esc keeps the ticket; a double press leaves once", async () => {
     show();
     const leave = screen.getByRole("button", { name: "Leave the queue" });
