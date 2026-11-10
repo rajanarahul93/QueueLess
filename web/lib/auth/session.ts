@@ -12,6 +12,11 @@ type Message = { type: "session"; session: Session } | { type: "logout" };
 let session: Session | null = null;
 let generation = 0; // bumps on every sign-in, refresh, adoption and logout
 let inflight: Promise<Session | null> | null = null;
+/** Why the last refresh ended as it did. A refusal is the server spending or rejecting the
+ *  cookie; `unreachable` means the request never got an answer, which says nothing about the
+ *  session, so a caller must not read it as a sign-out. */
+export type RefreshOutcome = "ok" | "refused" | "unreachable";
+let outcome: RefreshOutcome = "ok";
 const listeners = new Set<(session: Session | null) => void>();
 const channel =
   typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("queueless-auth");
@@ -27,6 +32,10 @@ export function getAccessToken(): string | null {
 
 export function getSession(): Session | null {
   return session;
+}
+
+export function lastRefreshOutcome(): RefreshOutcome {
+  return outcome;
 }
 
 export function onSessionChange(listener: (session: Session | null) => void): () => void {
@@ -58,6 +67,7 @@ function endSession(announce: boolean): void {
 export function refreshSession(): Promise<Session | null> {
   if (!inflight) {
     const seen = generation;
+    outcome = "ok"; // a run that never reaches callRefresh (another tab refreshed) is not a failure
     inflight = withLock(() =>
       generation !== seen ? Promise.resolve(session) : callRefresh(),
     ).finally(() => {
@@ -81,14 +91,17 @@ async function callRefresh(): Promise<Session | null> {
       headers: { Accept: "application/json" },
     });
   } catch {
-    return null; // offline: keep what we have, the caller reports the failure
+    outcome = "unreachable"; // the request never got an answer: the cookie was not spent
+    return null;
   }
   if (!response.ok) {
+    outcome = "refused";
     if (session) endSession(false); // the cookie is shared, so every tab finds out itself
     return null;
   }
   const body = (await response.json()) as { access_token: string; user: User };
   const next = { accessToken: body.access_token, user: body.user };
+  outcome = "ok";
   adopt(next);
   return next;
 }
