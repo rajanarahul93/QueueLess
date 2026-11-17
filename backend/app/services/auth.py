@@ -16,7 +16,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings
+from app.core.config import LOGIN_LIMIT_WINDOW_SEC, Settings
 from app.core.errors import (
     OtpExpired,
     OtpInvalid,
@@ -43,7 +43,6 @@ from app.services.notifications import SmsProvider
 logger = logging.getLogger(__name__)
 
 OTP_REQUEST_PHONE_LIMIT = (5, 3600)
-LOGIN_EMAIL_LIMIT = (5, 900)
 PASSWORD_LOGIN_ROLES = ("owner", "staff", "admin")
 DEFAULT_CUSTOMER_NAME = "Customer"
 # How many rotations inside the grace window a reused refresh token may be followed through.
@@ -332,7 +331,10 @@ async def login(
     password: str,
 ) -> AuthResult:
     await limiter.check(
-        "login_email", hashlib.sha256(email.lower().encode()).hexdigest(), *LOGIN_EMAIL_LIMIT
+        "login_email",
+        hashlib.sha256(email.lower().encode()).hexdigest(),
+        settings.login_email_limit,
+        LOGIN_LIMIT_WINDOW_SEC,
     )
     user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
     stored_hash = (

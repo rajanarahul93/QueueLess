@@ -3,5 +3,8 @@
 services:
   api:
     environment:
+      # The suite signs in more than 20 times from one IP; a deployment cannot raise this
+      # (Settings refuses it outside local and test). The per-email limit stays at its default.
+      LOGIN_IP_LIMIT: "200"
       SSE_MAX_STREAM_SEC: "20"
       SSE_HEARTBEAT_SEC: "5"

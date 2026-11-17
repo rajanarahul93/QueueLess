@@ -9,6 +9,11 @@ from pydantic_settings import BaseSettings, NoDecode
 LOCAL_JWT_SECRET = "local-dev-only-jwt-secret-not-for-production-use"
 LOCAL_STREAM_TOKEN_SECRET = "local-dev-only-stream-secret-not-for-production-use"
 MIN_SECRET_LENGTH = 32
+# The login limits in force before they were configurable. Outside local and test a
+# deployment may lower them, never raise them.
+LOGIN_IP_LIMIT_CEILING = 20
+LOGIN_EMAIL_LIMIT_CEILING = 5
+LOGIN_LIMIT_WINDOW_SEC = 900
 APP_LOG_HANDLER = "queueless"
 
 
@@ -39,6 +44,9 @@ class Settings(BaseSettings):
     idempotency_ttl_sec: int = Field(default=86400, gt=0)
     db_pool_size: int = Field(default=10, gt=0)
     booking_rate_limit_per_hour: int = Field(default=20, gt=0)
+    # Per IP and per email address, each over LOGIN_LIMIT_WINDOW_SEC.
+    login_ip_limit: int = Field(default=LOGIN_IP_LIMIT_CEILING, gt=0)
+    login_email_limit: int = Field(default=LOGIN_EMAIL_LIMIT_CEILING, gt=0)
     join_rate_limit_per_hour: int = Field(default=20, gt=0)
     sse_heartbeat_sec: int = Field(default=15, gt=0)
     sse_max_conn_per_user: int = Field(default=5, gt=0)
@@ -73,6 +81,14 @@ class Settings(BaseSettings):
             raise ValueError("cors_origins must list exact origins, not *")
         if self.sse_max_stream_sec < 2 * self.sse_heartbeat_sec:
             raise ValueError("sse_max_stream_sec must be at least twice sse_heartbeat_sec")
+        if self.app_env not in ("local", "test"):
+            ceilings = {
+                "login_ip_limit": (self.login_ip_limit, LOGIN_IP_LIMIT_CEILING),
+                "login_email_limit": (self.login_email_limit, LOGIN_EMAIL_LIMIT_CEILING),
+            }
+            for field, (configured, ceiling) in ceilings.items():
+                if configured > ceiling:
+                    raise ValueError(f"{field} can only be lowered outside local and test")
         if self.otp_provider == "mock" and self.app_env == "production":
             raise ValueError("otp_provider mock is not allowed in production")
         return self

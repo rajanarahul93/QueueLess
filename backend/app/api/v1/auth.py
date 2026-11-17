@@ -16,7 +16,12 @@ from app.core.dependencies import (
     require_trusted_origin,
 )
 from app.core.errors import Unauthenticated
-from app.core.rate_limit import RateLimiter, get_rate_limiter, rate_limit
+from app.core.rate_limit import (
+    RateLimiter,
+    get_rate_limiter,
+    login_ip_rate_limit,
+    rate_limit,
+)
 from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
@@ -121,7 +126,7 @@ async def register(body: RegisterRequest, session: SessionDep) -> RegisterRespon
 
 @router.post(
     "/login",
-    dependencies=[Depends(rate_limit("login_ip", limit=20, window_sec=900))],
+    dependencies=[Depends(login_ip_rate_limit)],
 )
 async def login(
     body: LoginRequest,
