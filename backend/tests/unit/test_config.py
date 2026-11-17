@@ -183,3 +183,51 @@ def test_log_level_default_case_and_bounds() -> None:
     for bad in ("TRACE", "CRITICAL", "", "verbose"):
         with pytest.raises(ValidationError):
             make_settings(log_level=bad)
+
+
+def test_login_limit_defaults_match_the_limits_in_force() -> None:
+    settings = make_settings()
+    assert settings.login_ip_limit == 20
+    assert settings.login_email_limit == 5
+
+
+def test_login_limits_read_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("LOGIN_IP_LIMIT", "200")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/d")
+    monkeypatch.setenv("REDIS_URL", "redis://h:6379/0")
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
+    monkeypatch.setenv("STREAM_TOKEN_SECRET", TEST_STREAM_SECRET)
+    assert Settings(_env_file=None).login_ip_limit == 200
+
+
+@pytest.mark.parametrize("field", ["login_ip_limit", "login_email_limit"])
+def test_a_login_limit_below_one_is_rejected(field: str) -> None:
+    with pytest.raises(ValidationError, match="greater than 0"):
+        make_settings(**{field: 0})
+
+
+def production_complaint(**overrides: object) -> str:
+    """No Settings can be built for production yet: otp_provider is Literal["mock"] and
+    production refuses it (Phase 7 adds a real one). So the safeguard is proved by WHICH
+    complaint comes back, not by whether validation fails."""
+    with pytest.raises(ValidationError) as error:
+        make_settings(app_env="production", **overrides)
+    return str(error.value)
+
+
+@pytest.mark.parametrize(("field", "raised"), [("login_ip_limit", 21), ("login_email_limit", 6)])
+def test_raising_a_login_limit_outside_local_or_test_is_rejected(field: str, raised: int) -> None:
+    # Loosening the limit is a test-stack convenience; a real deployment must not do it.
+    assert "only be lowered" in production_complaint(**{field: raised})
+
+
+@pytest.mark.parametrize("app_env", ["local", "test"])
+def test_raising_a_login_limit_is_allowed_locally(app_env: str) -> None:
+    assert make_settings(app_env=app_env, login_ip_limit=200).login_ip_limit == 200
+
+
+@pytest.mark.parametrize("field", ["login_ip_limit", "login_email_limit"])
+def test_lowering_a_login_limit_in_production_is_allowed(field: str) -> None:
+    assert getattr(make_settings(**{field: 2}), field) == 2  # the value is really taken
+    assert "only be lowered" not in production_complaint(**{field: 2})

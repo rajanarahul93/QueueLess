@@ -8,7 +8,7 @@ from app.core import security
 from app.core.security import hash_password, password_needs_rehash
 from app.models import User
 from app.services import auth as auth_service
-from tests.integration.api import Api, new_email, new_phone
+from tests.integration.api import Api, new_email, new_phone, open_api
 
 pytestmark = pytest.mark.anyio
 
@@ -182,3 +182,28 @@ async def test_login_rate_limit_key_has_no_raw_email(api: Api) -> None:
     await post_login(api, email, PASSWORD)
     keys = [key async for key in api.redis.scan_iter("rl:login_email:*")]
     assert keys and all(email.encode() not in key for key in keys)
+
+
+async def test_a_lowered_ip_limit_is_the_one_enforced(migrated_url: str, redis_url: str) -> None:
+    """The setting is not decoration: the 429 arrives at the configured limit, not at 20."""
+    async with open_api(migrated_url, redis_url, {"login_ip_limit": 3}) as api:
+        for _ in range(3):
+            assert (await post_login(api, new_email(), PASSWORD)).status_code == 401
+        blocked = await post_login(api, new_email(), PASSWORD)
+        assert blocked.status_code == 429 and blocked.json()["code"] == "RATE_LIMITED"
+
+
+async def test_a_lowered_email_limit_is_the_one_enforced(migrated_url: str, redis_url: str) -> None:
+    async with open_api(migrated_url, redis_url, {"login_email_limit": 2}) as api:
+        email, _ = await register(api)
+        for _ in range(2):
+            assert (await post_login(api, email, "wrong password")).status_code == 401
+        blocked = await post_login(api, email, PASSWORD)  # even the right password
+        assert blocked.status_code == 429 and blocked.json()["code"] == "RATE_LIMITED"
+
+
+async def test_a_raised_ip_limit_is_the_one_enforced(migrated_url: str, redis_url: str) -> None:
+    """What the e2e stack does: 25 logins from one IP pass where the default would stop at 20."""
+    async with open_api(migrated_url, redis_url, {"login_ip_limit": 200}) as api:
+        for _ in range(25):
+            assert (await post_login(api, new_email(), PASSWORD)).status_code == 401

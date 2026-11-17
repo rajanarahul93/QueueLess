@@ -9,7 +9,7 @@ from fastapi import Depends, Request
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from app.core.config import Settings
+from app.core.config import LOGIN_LIMIT_WINDOW_SEC, Settings
 from app.core.dependencies import CurrentUser, get_clock, get_redis, get_settings
 from app.core.errors import RateLimited, ServiceUnavailable
 
@@ -91,6 +91,17 @@ def user_rate_limit(scope: str, *, limit: int, window_sec: int) -> Callable[...,
         await limiter.check(scope, str(user.user_id), limit, window_sec)
 
     return dependency
+
+
+async def login_ip_rate_limit(
+    request: Request,
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Per IP; the limit is a setting so the e2e stack can raise it (never a deployment)."""
+    await limiter.check(
+        "login_ip", client_ip(request), settings.login_ip_limit, LOGIN_LIMIT_WINDOW_SEC
+    )
 
 
 async def token_create_rate_limit(
