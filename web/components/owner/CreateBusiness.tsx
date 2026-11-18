@@ -11,32 +11,8 @@ import { OpenHoursEditor } from "@/components/owner/OpenHoursEditor";
 import { myBusinessesQuery } from "@/components/console/BusinessPicker";
 import { errorMessage, invalidFields } from "@/lib/api/errors";
 import { defaultHours, hoursProblem, toApi, type OpenHours } from "@/lib/owner/hours";
+import { browserZone, nowIn, zoneNames } from "@/lib/owner/zones";
 import { useCreateBusiness } from "@/lib/owner/useCreateBusiness";
-
-/** Every zone the browser knows, so the owner picks the business's own. The API checks the name
- *  against its own tzdata and answers 422 on `timezone` if it disagrees. */
-function zoneNames(): string[] {
-  const supported = (Intl as { supportedValuesOf?: (key: "timeZone") => string[] }).supportedValuesOf;
-  const names = supported ? supported("timeZone") : [];
-  // The browser's own zone can be a name its list leaves out (an older build answers
-  // "Asia/Calcutta" and lists only that, or the other way round), and a preselection that
-  // matches no option would quietly select somebody else's zone.
-  const all = new Set([...names, browserZone(), "UTC"]);
-  return [...all].filter(Boolean).sort();
-}
-
-function browserZone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-}
-
-/** The time it is right now where the business is, so a wrong zone is visible before saving. */
-function nowIn(zone: string): string {
-  try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric", minute: "2-digit" }).format(new Date());
-  } catch {
-    return "—";
-  }
-}
 
 const FIELD_COPY: Record<string, string> = {
   name: "Give the business a name.",

@@ -262,6 +262,43 @@ describe("the action bar's other rules", () => {
     expect(pressed).toEqual([{ kind: "no-show", tokenId: "t1" }]);
   });
 
+  it.each([
+    ["Esc", (dialog: HTMLElement) => {
+      fireEvent(dialog, new Event("cancel"));
+      (dialog as HTMLDialogElement).close();
+    }],
+    ["Keep waiting", (dialog: HTMLElement) => {
+      within(dialog).getByRole("button", { name: "Keep waiting" }).click();
+    }],
+  ])("the no-show dialog gives focus back to No-show after %s", async (_, dismiss) => {
+    // Focus starts inside the dialog, as a real modal puts it, so the assertion below can only
+    // pass because the code restores it: jsdom's <dialog> stand-in moves focus by itself.
+    const pressed: unknown[] = [];
+    show(bar({ target: row({ status: "called" }), onPress: (p: unknown) => pressed.push(p) }));
+    const open = screen.getByRole("button", { name: "No-show" });
+    await userEvent.click(open);
+    const dialog = screen.getByRole("dialog");
+    within(dialog).getByRole("button", { name: "Keep waiting" }).focus();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      dismiss(dialog);
+    });
+    expect(document.activeElement).toBe(open);
+    expect(pressed).toEqual([]);
+  });
+
+  it("a confirmed no-show leaves focus where the code puts it: on the dialog's own button", async () => {
+    // Recorded as it is today, not as an opinion: the confirm path does not restore focus,
+    // because the action bar relabels itself and the opener may be gone.
+    const pressed: unknown[] = [];
+    show(bar({ target: row({ status: "called" }), onPress: (p: unknown) => pressed.push(p) }));
+    await userEvent.click(screen.getByRole("button", { name: "No-show" }));
+    const confirm = within(screen.getByRole("dialog")).getByRole("button", { name: "Yes, not here" });
+    await userEvent.click(confirm);
+    expect(pressed).toEqual([{ kind: "no-show", tokenId: "t1" }]);
+    expect(document.activeElement).toBe(confirm);
+  });
+
   it("the last skip is labelled No-show and confirmed", async () => {
     const pressed: unknown[] = [];
     show(bar({ target: row({ status: "called", skip_count: MAX_SKIPS }), onPress: (p: unknown) => pressed.push(p) }));

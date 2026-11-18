@@ -19,6 +19,10 @@ const OwnerPage = (await import("@/app/(owner)/owner/page")).default;
 const StaffPage = (await import("@/app/(staff)/console/page")).default;
 const ConsolePage = (await import("@/app/(staff)/console/[businessId]/page")).default;
 const CustomerPage = (await import("@/app/(customer)/ticket/page")).default;
+const ServicesPage = (await import("@/app/(owner)/owner/[businessId]/services/page")).default;
+const OwnerStaffPage = (await import("@/app/(owner)/owner/[businessId]/staff/page")).default;
+const OwnerSettingsPage = (await import("@/app/(owner)/owner/[businessId]/settings/page")).default;
+const OwnerDashboardPage = (await import("@/app/(owner)/owner/[businessId]/dashboard/page")).default;
 
 // The customer page loads its tickets; the request never answers here (only the guard matters).
 vi.stubGlobal("fetch", () => new Promise(() => {}));
@@ -80,6 +84,38 @@ describe("RequireRole", () => {
     render(
       <Suspense fallback={null}>
         <ConsolePage params={consoleParams} />
+      </Suspense>,
+    );
+    const refusal = "You don't have access to this page";
+    if (allowed) await waitFor(() => expect(screen.queryByText(refusal)).toBeNull());
+    else await screen.findByText(refusal);
+  });
+
+  // One promise, created once, for the owner's services page.
+  const servicesParams = Promise.resolve({ businessId: "b1" });
+
+  it.each([
+    ["services", ServicesPage, "owner", true],
+    ["services", ServicesPage, "staff", false],
+    ["services", ServicesPage, "customer", false],
+    ["services", ServicesPage, "admin", false],
+    ["staff", OwnerStaffPage, "owner", true],
+    ["staff", OwnerStaffPage, "staff", false],
+    ["staff", OwnerStaffPage, "customer", false],
+    ["staff", OwnerStaffPage, "admin", false],
+    ["settings", OwnerSettingsPage, "owner", true],
+    ["settings", OwnerSettingsPage, "staff", false],
+    ["settings", OwnerSettingsPage, "customer", false],
+    ["settings", OwnerSettingsPage, "admin", false],
+    ["dashboard", OwnerDashboardPage, "owner", true],
+    ["dashboard", OwnerDashboardPage, "staff", false],
+    ["dashboard", OwnerDashboardPage, "customer", false],
+    ["dashboard", OwnerDashboardPage, "admin", false],
+  ] as const)("the owner %s page admits %s: %s", async (_, Page, role, allowed) => {
+    owner(role);
+    render(
+      <Suspense fallback={null}>
+        <Page params={servicesParams} />
       </Suspense>,
     );
     const refusal = "You don't have access to this page";

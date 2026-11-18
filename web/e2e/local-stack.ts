@@ -62,6 +62,34 @@ export function insertAppointments(like: string, status: string, starts: Date[],
   return out.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+/** Finished days for the owner's dashboard. The rollup only ever writes days that are over, so
+ *  an e2e run has nothing to show without this: the rows go in the same way the appointments
+ *  above do, and `days` counts backwards from yesterday in the business's own zone. */
+export function insertDailyStats(businessId: string, serviceId: string, days: string[]): number {
+  requireLocal();
+  for (const id of [businessId, serviceId]) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("bad daily_stats input");
+  }
+  if (days.some((day) => !/^\d{4}-\d{2}-\d{2}$/.test(day))) throw new Error("bad daily_stats day");
+  const rows = days
+    .flatMap((day, index) =>
+      [10, 17].map((hour) => {
+        const joined = 6 + hour % 5 + index % 3;
+        const noShows = hour === 17 ? 1 : 0;
+        return `('${businessId}'::uuid, '${serviceId}'::uuid, '${day}'::date, ${hour}, ${joined}, ${joined - noShows}, ${240 + hour * 7}, ${300 + hour * 9}, ${260 + hour * 6}, ${noShows}, 0)`;
+      }),
+    )
+    .join(",");
+  const sql =
+    "INSERT INTO daily_stats (business_id, service_id, stat_date, hour, tokens_joined, tokens_served, " +
+    `avg_wait_sec, p90_wait_sec, avg_predicted_wait_sec, no_shows, cancelled) VALUES ${rows} RETURNING id`;
+  const out = compose(
+    "exec", "-T", "postgres", "sh", "-c",
+    `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -qtA -v ON_ERROR_STOP=1 -c "${sql}"`,
+  );
+  return out.split("\n").map((line) => line.trim()).filter(Boolean).length;
+}
+
 /** Puts a running-late notice (or its clearing) for one token into the outbox, as the worker's
  *  job would; the relay publishes it to the token's stream. Local only: the job itself is
  *  covered by the backend tests, and waiting for it here would take minutes. */
