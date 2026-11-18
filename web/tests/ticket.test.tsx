@@ -214,6 +214,22 @@ describe("the live ticket", () => {
     expect(document.activeElement).toBe(leave);
   });
 
+  it("leave: Esc returns focus to Leave, from inside the dialog", async () => {
+    // The weaker test below never moves focus off the Leave button, so it would pass with the
+    // restore deleted. A real modal takes focus when it opens; jsdom's stand-in does not, so
+    // this test puts focus inside the dialog first and only then presses Esc.
+    show();
+    const leave = screen.getByRole("button", { name: "Leave the queue" });
+    await userEvent.click(leave);
+    const dialog = screen.getByRole("dialog", { name: "Leave the queue?" });
+    within(dialog).getByRole("button", { name: "Stay in the queue" }).focus();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    fireEvent(dialog, new Event("cancel")); // Esc
+    (dialog as HTMLDialogElement).close();
+    expect(document.activeElement).toBe(leave);
+    expect(deletes).toBe(0);
+  });
+
   it("leave: Esc keeps the ticket; a double press leaves once", async () => {
     show();
     const leave = screen.getByRole("button", { name: "Leave the queue" });

@@ -56,6 +56,30 @@ export function OwnerHub() {
                   >
                     Appointments today
                   </Link>
+                  <Link
+                    href={`/owner/${business.id}/services`}
+                    className="inline-flex min-h-12 items-center rounded-md border border-border-strong bg-surface px-4 text-label font-medium"
+                  >
+                    Services
+                  </Link>
+                  <Link
+                    href={`/owner/${business.id}/staff`}
+                    className="inline-flex min-h-12 items-center rounded-md border border-border-strong bg-surface px-4 text-label font-medium"
+                  >
+                    Staff
+                  </Link>
+                  <Link
+                    href={`/owner/${business.id}/settings`}
+                    className="inline-flex min-h-12 items-center rounded-md border border-border-strong bg-surface px-4 text-label font-medium"
+                  >
+                    Settings
+                  </Link>
+                  <Link
+                    href={`/owner/${business.id}/dashboard`}
+                    className="inline-flex min-h-12 items-center rounded-md border border-border-strong bg-surface px-4 text-label font-medium"
+                  >
+                    Dashboard
+                  </Link>
                 </div>
               </li>
             ))}

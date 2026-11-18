@@ -227,6 +227,30 @@ describe("the queue status menu", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it.each([
+    ["Esc", (dialog: HTMLElement) => {
+      fireEvent(dialog, new Event("cancel"));
+      (dialog as HTMLDialogElement).close();
+    }],
+    ["Keep it open", (dialog: HTMLElement) => {
+      within(dialog).getByRole("button", { name: "Keep it open" }).click();
+    }],
+  ])("the close-queue dialog gives focus back to Closed after %s", async (_, dismiss) => {
+    // Focus begins inside the dialog, as a real modal puts it: jsdom's stand-in does not move
+    // focus, so without that this would pass with the restore deleted.
+    show(<StatusMenu queueId="q1" status="open" />);
+    const open = screen.getByRole("button", { name: "Closed" });
+    await userEvent.click(open);
+    const dialog = screen.getByRole("dialog");
+    within(dialog).getByRole("button", { name: "Keep it open" }).focus();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await act(async () => {
+      dismiss(dialog);
+    });
+    expect(document.activeElement).toBe(open);
+    expect(calls).toHaveLength(0);
+  });
+
   it("a refusal is explained in the console's own words", async () => {
     answer = () => new Response(JSON.stringify({ code: "INVALID_TRANSITION" }), { status: 409, headers: { "Content-Type": "application/json" } });
     show(<StatusMenu queueId="q1" status="paused" />);

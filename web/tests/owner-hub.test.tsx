@@ -186,10 +186,11 @@ describe("the owner hub", () => {
     expect(within(row).getByText("Asia/Kolkata")).toBeTruthy();
     expect(within(row).getByRole("link", { name: "Queue console" }).getAttribute("href")).toBe("/console/b1");
     expect(within(row).getByRole("link", { name: "Appointments today" }).getAttribute("href")).toBe("/console/b1/appointments");
-    // Nothing that ships later is linked yet.
-    for (const later of ["Services", "Staff", "Settings", "Dashboard"]) {
-      expect(within(row).queryByRole("link", { name: later })).toBeNull();
-    }
+    // 6E-2 added Services; the screens after it are still not linked.
+    expect(within(row).getByRole("link", { name: "Services" }).getAttribute("href")).toBe("/owner/b1/services");
+    expect(within(row).getByRole("link", { name: "Staff" }).getAttribute("href")).toBe("/owner/b1/staff");
+    expect(within(row).getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/owner/b1/settings");
+    expect(within(row).getByRole("link", { name: "Dashboard" }).getAttribute("href")).toBe("/owner/b1/dashboard");
   });
 
   it("leaves a business this owner only works at off the hub", async () => {

@@ -4,6 +4,7 @@ type Schemas = components["schemas"];
 export type Business = Schemas["BusinessOut"];
 export type BusinessPage = Schemas["BusinessPage"];
 export type Service = Schemas["ServiceOut"];
+export type Staff = Schemas["StaffOut"];
 export type Availability = Schemas["AvailabilityOut"];
 export type Slot = Schemas["SlotOut"];
 export type Appointment = Schemas["AppointmentOut"];
