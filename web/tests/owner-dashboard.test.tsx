@@ -17,6 +17,7 @@ const ZONE = "Asia/Kolkata";
 let peaks: { weekday: number; hour: number; tokens: number }[];
 let waits: { date: string; service_id: string; served: number; avg_wait_sec: number; p90_wait_sec: number | null; avg_predicted_wait_sec: number | null }[];
 let misses: { service_id: string | null; joined: number; no_shows: number; cancelled: number; no_show_rate: number; cancel_rate: number }[];
+let services: { id: string; name: string }[] | null;
 let asked: string[];
 let fail: number | null;
 
@@ -30,6 +31,7 @@ function serve() {
       if (url.includes("peak-hours")) return Response.json(peaks);
       if (url.includes("wait-times")) return Response.json(waits);
       if (url.includes("no-shows")) return Response.json(misses);
+      if (url.includes("/services")) return services ? Response.json(services) : Response.json({ code: "SERVICE_UNAVAILABLE" }, { status: 503 });
       return Response.json({ id: "b1", name: "North Clinic", category: "clinic", address: null, timezone: ZONE, open_hours: {} });
     }),
   );
@@ -40,6 +42,7 @@ const show = (node: ReactNode) =>
 
 beforeEach(() => {
   fail = null;
+  services = [{ id: "s1", name: "Checkup" }];
   peaks = [
     { weekday: 0, hour: 10, tokens: 4 },
     { weekday: 1, hour: 10, tokens: 5 },
@@ -151,6 +154,26 @@ describe("the owner dashboard", () => {
     const table = await screen.findByRole("table", { name: "By service over the range" });
     expect(within(table).getByRole("rowheader", { name: "Walk-ins with no service" })).toBeTruthy();
     expect(within(table).getAllByRole("row")).toHaveLength(3); // the header and two services
+  });
+
+  it("names each service, and falls back to the start of the id for one it does not know", async () => {
+    misses = [
+      { service_id: "s1", joined: 20, no_shows: 2, cancelled: 1, no_show_rate: 0.1, cancel_rate: 0.05 },
+      { service_id: "9f8e7d6c-1111-2222-3333-444455556666", joined: 4, no_shows: 0, cancelled: 0, no_show_rate: 0, cancel_rate: 0 },
+    ];
+    show(<OwnerDashboard businessId="b1" />);
+    const table = await screen.findByRole("table", { name: "By service over the range" });
+    expect(await within(table).findByRole("rowheader", { name: "Checkup" })).toBeTruthy();
+    expect(within(table).getByRole("rowheader", { name: "9f8e7d6c" })).toBeTruthy();
+    expect(asked.some((url) => url.includes("/services?include_inactive=true"))).toBe(true);
+  });
+
+  it("still shows the table, by id, when the service list cannot be read", async () => {
+    services = null;
+    show(<OwnerDashboard businessId="b1" />);
+    const table = await screen.findByRole("table", { name: "By service over the range" });
+    expect(within(table).getByRole("rowheader", { name: "s1" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("a business with no finished days says so", async () => {

@@ -292,7 +292,7 @@ test("the owner edits the settings, and they survive a reload", async () => {
 // seed rows - by SQL, through the helper in local-stack.ts. Still the same owner session.
 test("the owner sees the dashboard, built from finished days only", async () => {
   business(); // the precondition, before anything on the page
-  const zone = "Asia/Kolkata";
+  // The business's own zone, as the creating test chose it (Kolkata only when that is not near midnight).
   const yesterday = addDays(localToday(zone), -1);
   const days = [0, 1, 2].map((back) => addDays(yesterday, -back));
   // include_inactive, because the services spec above stopped offering the only one. That view
@@ -301,9 +301,9 @@ test("the owner sees the dashboard, built from finished days only", async () => 
     headers: await authHeaders(),
   });
   expect(listing.ok(), await listing.text()).toBe(true);
-  const services = (await listing.json()) as { id: string }[];
+  const services = (await listing.json()) as { id: string; name: string }[];
   expect(services.length, "the business has a service to attribute the days to").toBeGreaterThan(0);
-  expect(insertDailyStats(business().id, services[0].id, days)).toBe(days.length * 2);
+  expect(insertDailyStats(business().id, services[0].id, days)).toBe(days.length * 3); // two hours and the whole day
 
   await page.goto(`/owner/${business().id}/dashboard`);
   await expectTitle(page, "Dashboard · QueueLess");
@@ -316,12 +316,20 @@ test("the owner sees the dashboard, built from finished days only", async () => 
   for (const tile of ["Busiest hour", "Average wait", "No-shows"]) {
     await expect(page.getByRole("listitem").filter({ hasText: tile })).toBeVisible();
   }
+  // Seeded: 3 days of 48 joined between them, 45 served after 3 no-shows, an average wait of 330 s.
+  await expect(page.getByRole("listitem").filter({ hasText: "Average wait" })).toContainText("6 min");
+  await expect(page.getByRole("listitem").filter({ hasText: "Average wait" })).toContainText("over 45 served");
+  await expect(page.getByRole("listitem").filter({ hasText: "No-shows" })).toContainText("3 of 48 joined");
   await expect(page.getByRole("heading", { level: 2, name: "When people join" })).toBeVisible();
 
   // Every chart has the same numbers as a table, which is what a screen reader gets.
   await page.getByText("View data").first().click();
   await expect(page.getByRole("table", { name: "Tokens joined" })).toBeVisible();
-  await expect(page.getByRole("table", { name: "By service over the range" })).toBeVisible();
+  const byService = page.getByRole("table", { name: "By service over the range" });
+  await expect(byService).toBeVisible();
+  // Named, not an id fragment - and this service was retired above, so its name comes from the
+  // owner's include-inactive list.
+  await expect(byService.getByRole("rowheader", { name: services[0].name, exact: true })).toBeVisible();
   await noAxeViolations(page, "/owner/[id]/dashboard");
 
   await page.setViewportSize({ width: 360, height: 780 });
