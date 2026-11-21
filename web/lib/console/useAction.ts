@@ -139,5 +139,11 @@ export function useAction(queueId: string, refresh: () => Promise<void>, blocked
     [freshest, queueId, refresh, slow, writeToken],
   );
 
-  return { run, busy, slow, error, clearError: () => setError(null), freshest };
+  // Called where the hold timer fires: the guard lets go in the same task that lets the button go,
+  // not in the passive effect after the render, so a click in between is sent, not dropped.
+  const release = useCallback(() => {
+    holding.current = false;
+  }, []);
+
+  return { run, busy, slow, error, clearError: () => setError(null), freshest, release };
 }
