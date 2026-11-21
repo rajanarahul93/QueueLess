@@ -109,7 +109,7 @@ function LiveQueue({ queueId, business }: { queueId: string; business: MyBusines
   });
   const [expiredHold, setExpiredHold] = useState(0);
   const held = seen.hold !== 0 && seen.hold !== expiredHold;
-  const { run, busy, slow, error } = useAction(queueId, refresh, held);
+  const { run, busy, slow, error, release } = useAction(queueId, refresh, held);
   // This tab's own memory: which row is selected, which token it called last, and the one line
   // the staff member reads. None of it is stored anywhere.
   // "Open in queue" on the appointments page links here with ?token=; the router's own reader
@@ -141,9 +141,12 @@ function LiveQueue({ queueId, business }: { queueId: string; business: MyBusines
   useEffect(() => {
     if (seen.hold === 0 || seen.hold === expiredHold) return;
     const round = seen.hold;
-    const timer = setTimeout(() => setExpiredHold(round), PRIMARY_HOLD_MS);
+    const timer = setTimeout(() => {
+      release();
+      setExpiredHold(round);
+    }, PRIMARY_HOLD_MS);
     return () => clearTimeout(timer);
-  }, [seen.hold, expiredHold]);
+  }, [seen.hold, expiredHold, release]);
   // A token that left the active list takes the panel with it, and is accounted for by name —
   // unless this staff member's own action ended it, which says so in its own words.
   const watched = useRef(new Map<string, SnapshotToken>());

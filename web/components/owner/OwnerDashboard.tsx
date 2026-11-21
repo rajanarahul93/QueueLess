@@ -6,6 +6,7 @@ import { Button } from "@/components/Button";
 import { DelayedSkeleton } from "@/components/booking/DelayedSkeleton";
 import { businessQuery } from "@/components/booking/BusinessDetail";
 import { errorMessage } from "@/lib/api/errors";
+import { servicesQuery } from "@/lib/owner/services";
 import {
   byDay,
   byHour,
@@ -104,6 +105,10 @@ export function OwnerDashboard({ businessId }: { businessId: string }) {
       { ...noShowsQuery(businessId, span ?? { from: "", to: "" }), enabled: Boolean(span), retry: false },
     ],
   });
+
+  // Names only: the table still reads by id when the list cannot be had, so this never fails the page.
+  const services = useQuery({ ...servicesQuery(businessId), retry: false });
+  const names = new Map((Array.isArray(services.data) ? services.data : []).map((service) => [service.id, service.name]));
 
   const failed = [business, peaks, waits, misses].find((report) => report.isError);
   if (failed) {
@@ -212,7 +217,7 @@ export function OwnerDashboard({ businessId }: { businessId: string }) {
               {(misses.data as NoShow[]).map((row) => (
                 <tr key={row.service_id ?? "walk-ins"} className="border-t border-border">
                   <th scope="row" className="py-1 text-left font-normal">
-                    {row.service_id === null ? "Walk-ins with no service" : row.service_id.slice(0, 8)}
+                    {row.service_id === null ? "Walk-ins with no service" : (names.get(row.service_id) ?? row.service_id.slice(0, 8))}
                   </th>
                   <td className="py-1 text-right">{row.joined}</td>
                   <td className="py-1 text-right">{row.no_shows}</td>

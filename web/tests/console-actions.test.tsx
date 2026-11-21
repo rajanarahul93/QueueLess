@@ -133,7 +133,13 @@ async function remoteChange(next: SnapshotToken[]) {
   };
   await act(async () => {
     feed(`id: ${eventId}\nevent: ${envelope.type}\ndata: ${JSON.stringify(envelope)}\n\n`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+  // Wait for the change to show, not for a fixed time: the primary button takes the new
+  // status's label, and an ended token says what became of it.
+  const label = { called: "Start", in_service: "Complete" }[token.status as string];
+  await waitFor(() => {
+    if (label) expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    else expect(screen.getByRole("status").textContent).toContain(`#${token.token_no} `);
   });
 }
 
@@ -649,12 +655,44 @@ describe("the primary hold on the screen", () => {
     });
     expect(calls).toHaveLength(before); // nothing was sent
     await waitFor(() => expect((screen.getByRole("button", { name: "Complete" }) as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 });
+    await act(async () => {}); // let the release's effects run before the click
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Complete" }));
     });
     const sent = calls.filter((call) => call.url.includes("/complete"));
     expect(sent).toHaveLength(1);
     expect(sent[0].body).toMatchObject({ version: 4 }); // the fresh version
+  });
+
+  it("a click in the instant the hold releases is sent, not dropped", async () => {
+    tokens = [row({ status: "called", appointment_id: "a1", source: "appointment" })];
+    await live();
+    await userEvent.click(selectRow(12));
+    await remoteChange([row({ status: "in_service", appointment_id: "a1", source: "appointment", version: 4 })]);
+    const complete = screen.getByRole("button", { name: "Complete" }) as HTMLButtonElement;
+    expect(complete.disabled).toBe(true);
+    // The timer's state update renders in its own task and its passive effects run in a LATER
+    // task. A MutationObserver callback runs between the two: the button is enabled in the DOM
+    // and the effects have not run. A native click there is the earliest click a person could make.
+    const released = new Promise<void>((resolve) => {
+      const observer = new MutationObserver(() => {
+        if (complete.disabled) return;
+        observer.disconnect();
+        complete.click();
+        resolve();
+      });
+      observer.observe(complete, { attributes: true, attributeFilter: ["disabled"] });
+    });
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      await released;
+      await new Promise((resolve) => setTimeout(resolve, 300)); // the request is sent after the click's own awaits
+    } finally {
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    }
+    const sent = calls.filter((call) => call.url.includes("/complete"));
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toMatchObject({ version: 4 });
   });
 
   it("the user's own action never holds the primary", async () => {

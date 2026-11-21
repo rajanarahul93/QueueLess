@@ -71,14 +71,18 @@ export function insertDailyStats(businessId: string, serviceId: string, days: st
     if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("bad daily_stats input");
   }
   if (days.some((day) => !/^\d{4}-\d{2}-\d{2}$/.test(day))) throw new Error("bad daily_stats day");
+  // Two hourly rows per day (the peak-hours report) and the whole-day row (hour NULL) that the
+  // wait-time and no-show reports read, as the nightly rollup writes them.
   const rows = days
-    .flatMap((day, index) =>
-      [10, 17].map((hour) => {
+    .flatMap((day, index) => {
+      const hourly = [10, 17].map((hour) => {
         const joined = 6 + hour % 5 + index % 3;
         const noShows = hour === 17 ? 1 : 0;
         return `('${businessId}'::uuid, '${serviceId}'::uuid, '${day}'::date, ${hour}, ${joined}, ${joined - noShows}, ${240 + hour * 7}, ${300 + hour * 9}, ${260 + hour * 6}, ${noShows}, 0)`;
-      }),
-    )
+      });
+      const joined = [10, 17].reduce((total, hour) => total + 6 + hour % 5 + index % 3, 0);
+      return [...hourly, `('${businessId}'::uuid, '${serviceId}'::uuid, '${day}'::date, NULL, ${joined}, ${joined - 1}, 330, 640, 300, 1, 0)`];
+    })
     .join(",");
   const sql =
     "INSERT INTO daily_stats (business_id, service_id, stat_date, hour, tokens_joined, tokens_served, " +
