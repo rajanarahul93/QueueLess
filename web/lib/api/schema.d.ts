@@ -21,6 +21,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readyz
+         * @description Liveness is /healthz; this also needs Postgres, Redis and the worker's relay.
+         */
+        get: operations["readyz_readyz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/appointments": {
         parameters: {
             query?: never;
@@ -978,6 +998,14 @@ export interface components {
             /** Phone */
             phone: string;
         };
+        /**
+         * OtpRequested
+         * @description The 202 body. Empty, except in demo mode, where no SMS is sent and the code is shown.
+         */
+        OtpRequested: {
+            /** Demo Code */
+            demo_code?: string | null;
+        };
         /** OtpVerify */
         OtpVerify: {
             /** Code */
@@ -1038,6 +1066,18 @@ export interface components {
              * @enum {string}
              */
             status: "open" | "paused" | "closed";
+        };
+        /** ReadyOut */
+        ReadyOut: {
+            /** Checks */
+            checks: {
+                [key: string]: "ok" | "failed";
+            };
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "unavailable";
         };
         /** RegisterRequest */
         RegisterRequest: {
@@ -1533,6 +1573,35 @@ export interface operations {
             };
         };
     };
+    readyz_readyz_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadyOut"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadyOut"];
+                };
+            };
+        };
+    };
     list_appointments_v1_appointments_get: {
         parameters: {
             query?: {
@@ -1778,9 +1847,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["OtpRequested"];
                 };
             };
             /** @description Validation Error */

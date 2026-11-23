@@ -6,6 +6,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.request_id import NO_REQUEST, REQUEST_ID_HEADER, request_id_of
+
 logger = logging.getLogger(__name__)
 
 # Codes for Starlette's own HTTP errors (unknown route, wrong method, ...).
@@ -208,9 +210,9 @@ async def handle_http_error(request: Request, error: StarletteHTTPException) -> 
 
 
 async def handle_unhandled_error(request: Request, error: Exception) -> JSONResponse:
-    # The response never carries the exception text, SQL or a stack trace (R4.6). The request id
-    # is a placeholder until the Phase 7 middleware assigns one.
-    request_id = request.headers.get("x-request-id", "-")
+    # The response never carries the exception text, SQL or a stack trace (R4.6). This handler
+    # runs outside the request-id middleware, so it sets the header on its own response.
+    request_id = request_id_of(request)
     logger.error(
         "unhandled error request_id=%s %s %s",
         request_id,
@@ -218,7 +220,12 @@ async def handle_unhandled_error(request: Request, error: Exception) -> JSONResp
         request.url.path,
         exc_info=error,
     )
-    return problem_response(500, "Internal error", "INTERNAL_ERROR", "An unexpected error occurred")
+    response = problem_response(
+        500, "Internal error", "INTERNAL_ERROR", "An unexpected error occurred"
+    )
+    if request_id != NO_REQUEST:
+        response.headers[REQUEST_ID_HEADER] = request_id
+    return response
 
 
 def register_error_handlers(app: FastAPI) -> None:

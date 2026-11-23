@@ -26,5 +26,16 @@ class MockSmsProvider:
             logger.warning("MOCK SMS to ***%s: OTP code %s", phone[-4:], code)
 
 
+class DemoSmsProvider:
+    """Demo mode: no message is sent and nothing is kept or logged. The request endpoint shows the
+    code to the caller instead (see `auth_service.request_otp`); the settings only allow this
+    provider with APP_ENV=demo."""
+
+    async def send_otp(self, phone: str, code: str) -> None:
+        return None
+
+
 def create_sms_provider(settings: Settings) -> SmsProvider:
+    if settings.otp_provider == "demo":
+        return DemoSmsProvider()
     return MockSmsProvider(log_codes=settings.app_env in ("local", "test"))

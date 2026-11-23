@@ -1,8 +1,11 @@
 import logging
+import re
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
+
+from app.core.request_id import RequestIdFilter, RequestIdFormatter
 
 # docker-compose passes these so a fresh clone starts without real secrets. They are rejected
 # unless app_env is "local".
@@ -15,13 +18,22 @@ LOGIN_IP_LIMIT_CEILING = 20
 LOGIN_EMAIL_LIMIT_CEILING = 5
 LOGIN_LIMIT_WINDOW_SEC = 900
 APP_LOG_HANDLER = "queueless"
+# The one header name that must never be trusted for the client address: any client can send it.
+UNTRUSTED_CLIENT_IP_HEADER = "x-forwarded-for"
+# Which OTP provider each environment may use. The mock prints codes, so only local and test get
+# it; the demo provider shows the code to the caller, so only demo gets it. Production has no
+# entry: it stays unable to start until a real provider exists.
+OTP_PROVIDER_FOR_ENV = {"local": "mock", "test": "mock", "demo": "demo"}
+# Environments where logs must not carry OTP codes, phone numbers or emails. Local and test keep
+# the mock provider's code line, which the end-to-end suite reads.
+SCRUBBED_ENVS = ("demo", "production")
 
 
 class Settings(BaseSettings):
     """Required values have no default so a missing variable fails at startup."""
 
     # The strict value is the default, so forgetting APP_ENV cannot accept a dev placeholder.
-    app_env: Literal["local", "test", "production"] = "production"
+    app_env: Literal["local", "test", "demo", "production"] = "production"
     # Level of the app's own log lines (app.*); uvicorn and arq set their own. Any case accepted.
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     database_url: str
@@ -37,7 +49,11 @@ class Settings(BaseSettings):
     cookie_domain: str = ""
     # Comma-separated in the environment; NoDecode stops pydantic-settings expecting JSON.
     cors_origins: Annotated[list[str], NoDecode] = []
-    otp_provider: Literal["mock"] = "mock"
+    # Empty means the address of the connection itself. Set it only behind a proxy that
+    # OVERWRITES this header on every request, for example x-real-ip: a client can send any value
+    # of a header the proxy passes through, and could then pick its own rate-limit bucket.
+    client_ip_header: str = ""
+    otp_provider: Literal["mock", "demo"] = "mock"
     otp_ttl_sec: int = Field(default=300, gt=0)
     otp_max_attempts: int = Field(default=5, gt=0)
     otp_resend_cooldown_sec: int = Field(default=30, gt=0)
@@ -66,6 +82,17 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("client_ip_header")
+    @classmethod
+    def plain_header_name(cls, value: str) -> str:
+        if value == "":
+            return value
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", value):
+            raise ValueError("client_ip_header must be a plain HTTP header name")
+        if value.lower() == UNTRUSTED_CLIENT_IP_HEADER:
+            raise ValueError("client_ip_header cannot be x-forwarded-for: any client can set it")
+        return value.lower()
+
     @model_validator(mode="after")
     def check_secrets(self) -> Self:
         secrets = {"jwt_secret": self.jwt_secret, "stream_token_secret": self.stream_token_secret}
@@ -79,6 +106,8 @@ class Settings(BaseSettings):
             raise ValueError("jwt_secret and stream_token_secret must differ")
         if "*" in self.cors_origins:
             raise ValueError("cors_origins must list exact origins, not *")
+        if self.app_env == "demo" and not self.cors_origins:
+            raise ValueError("cors_origins must name the web app's origin in demo")
         if self.sse_max_stream_sec < 2 * self.sse_heartbeat_sec:
             raise ValueError("sse_max_stream_sec must be at least twice sse_heartbeat_sec")
         if self.app_env not in ("local", "test"):
@@ -89,8 +118,8 @@ class Settings(BaseSettings):
             for field, (configured, ceiling) in ceilings.items():
                 if configured > ceiling:
                     raise ValueError(f"{field} can only be lowered outside local and test")
-        if self.otp_provider == "mock" and self.app_env == "production":
-            raise ValueError("otp_provider mock is not allowed in production")
+        if OTP_PROVIDER_FOR_ENV.get(self.app_env) != self.otp_provider:
+            raise ValueError(f"otp_provider {self.otp_provider} is not allowed in {self.app_env}")
         return self
 
 
@@ -98,12 +127,14 @@ def configure_logging(level: str) -> None:
     """Prints the app's own log lines (app.*) on stderr, in one format for the API and the worker.
 
     Only the `app` logger gets a handler: uvicorn and arq keep theirs, so no line is printed
-    twice. A second call in one process (tests, a reload) only changes the level.
+    twice. A second call in one process (tests, a reload) only changes the level. A line written
+    while a request runs ends with its request id.
     """
     app_logger = logging.getLogger("app")
     if not any(handler.get_name() == APP_LOG_HANDLER for handler in app_logger.handlers):
         handler = logging.StreamHandler()
         handler.set_name(APP_LOG_HANDLER)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        handler.addFilter(RequestIdFilter())
+        handler.setFormatter(RequestIdFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
         app_logger.addHandler(handler)
     app_logger.setLevel(level)

@@ -9,7 +9,8 @@ from arq import cron
 from arq.connections import RedisSettings
 from redis.asyncio import Redis
 
-from app.core.config import Settings, configure_logging
+from app.core.config import SCRUBBED_ENVS, Settings, configure_logging
+from app.core.log_scrub import install_log_scrub
 from app.db.session import create_engine, create_session_factory
 from app.realtime.relay import run_relay
 from app.services import queue_jobs, retention, rollups
@@ -22,6 +23,8 @@ WORKER_POOL_SIZE = 5
 async def startup(ctx: dict[str, Any]) -> None:
     settings = ctx.get("settings") or Settings()
     configure_logging(settings.log_level)  # arq configures only its own logger
+    if settings.app_env in SCRUBBED_ENVS:
+        install_log_scrub()
     engine = create_engine(settings.database_url, WORKER_POOL_SIZE)
     ctx["engine"] = engine
     ctx["sessions"] = create_session_factory(engine)
