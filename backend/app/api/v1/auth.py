@@ -26,6 +26,7 @@ from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
     OtpRequest,
+    OtpRequested,
     OtpVerify,
     RegisterRequest,
     RegisterResponse,
@@ -82,6 +83,7 @@ def _auth_response(response: Response, settings: Settings, result: AuthResult) -
 @router.post(
     "/otp/request",
     status_code=202,
+    response_model_exclude_none=True,  # outside demo mode the body stays exactly {}
     dependencies=[Depends(rate_limit("otp_request_ip", limit=20, window_sec=3600))],
 )
 async def request_otp(
@@ -91,9 +93,9 @@ async def request_otp(
     sms: SmsDep,
     settings: SettingsDep,
     clock: ClockDep,
-) -> dict[str, str]:
-    await auth_service.request_otp(redis, limiter, sms, settings, clock, body.phone)
-    return {}
+) -> OtpRequested:
+    shown = await auth_service.request_otp(redis, limiter, sms, settings, clock, body.phone)
+    return OtpRequested(demo_code=shown)
 
 
 @router.post(

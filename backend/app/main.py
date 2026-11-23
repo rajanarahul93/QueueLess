@@ -3,14 +3,17 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
 from app.api.v1 import appointments, auth, businesses, queues, reports, streams, tokens
-from app.core.config import Settings, configure_logging
+from app.core.config import SCRUBBED_ENVS, Settings, configure_logging
 from app.core.errors import register_error_handlers
 from app.core.idempotency import Replay, handle_replay
+from app.core.log_scrub import install_log_scrub
+from app.core.readiness import ReadyOut, check_ready
+from app.core.request_id import RequestIdMiddleware
 from app.core.timezones import zone_names
 from app.db.session import create_engine, create_session_factory
 from app.realtime.hub import Hub
@@ -25,6 +28,8 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     """
     resolved = settings or Settings()
     configure_logging(resolved.log_level)
+    if resolved.app_env in SCRUBBED_ENVS:
+        install_log_scrub()
     zone_names()  # a broken tzdata install must stop the app at startup
     access_log = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, RedactStreamToken) for f in access_log.filters):
@@ -68,6 +73,7 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
         # stream reconnects still pay one preflight. Other calls reuse it for 10 minutes.
         max_age=600,
     )
+    app.add_middleware(RequestIdMiddleware)  # after CORS, so preflight replies carry an id too
     register_error_handlers(app)
     app.add_exception_handler(Replay, handle_replay)  # type: ignore[arg-type]
     app.include_router(auth.router, prefix="/v1")
@@ -81,5 +87,14 @@ def create_app(settings: Settings | None = None, clock: Callable[[], float] = ti
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz", response_model=ReadyOut, responses={503: {"model": ReadyOut}})
+    async def readyz(request: Request, response: Response) -> ReadyOut:
+        """Liveness is /healthz; this also needs Postgres, Redis and the worker's relay."""
+        state = request.app.state
+        result = await check_ready(state.engine, state.redis, state.clock())
+        if result.status != "ok":
+            response.status_code = 503
+        return result
 
     return app

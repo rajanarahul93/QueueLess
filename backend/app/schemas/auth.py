@@ -19,6 +19,12 @@ class OtpRequest(BaseModel):
     phone: Phone
 
 
+class OtpRequested(BaseModel):
+    """The 202 body. Empty, except in demo mode, where no SMS is sent and the code is shown."""
+
+    demo_code: Annotated[str, StringConstraints(pattern=r"^\d{6}$")] | None = None
+
+
 class OtpVerify(BaseModel):
     phone: Phone
     code: Annotated[str, StringConstraints(pattern=r"^\d{6}$")]

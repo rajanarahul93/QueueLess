@@ -205,8 +205,12 @@ async def request_otp(
     settings: Settings,
     clock: Callable[[], float],
     phone: str,
-) -> None:
-    """Same outcome whether or not an account exists for the phone."""
+) -> str | None:
+    """Same outcome whether or not an account exists for the phone.
+
+    Returns the code ONLY for the demo provider, which sends nothing and so has the endpoint show
+    it; every other provider returns None. The settings allow that provider only with
+    APP_ENV=demo, and every limit below applies to it as to any other."""
     key = derive_otp_key(settings)
     phone_id = otp_mac(key, "phone", phone)
     await limiter.check("otp_cooldown", phone_id, 1, settings.otp_resend_cooldown_sec)
@@ -228,6 +232,7 @@ async def request_otp(
             pipe.pexpire(_otp_key(phone_id), settings.otp_ttl_sec * 1000 + 60_000)
             await pipe.execute()
     await sms.send_otp(phone, code)
+    return code if settings.otp_provider == "demo" else None
 
 
 async def consume_otp(

@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import math
 import time
@@ -61,8 +62,28 @@ def get_rate_limiter(
 
 
 def client_ip(request: Request) -> str:
-    # Behind a proxy this is the proxy's address; Phase 7 configures forwarded headers.
-    return request.client.host if request.client else "unknown"
+    """The address that rate limits are counted against.
+
+    By default the address of the connection itself. When CLIENT_IP_HEADER is set, that one
+    header's value is used if it is a single valid IP address, else the connection's address.
+    Safe ONLY behind a proxy that overwrites that header on every request (Caddy with
+    `header_up X-Real-IP {remote_host}`, Railway's X-Real-IP): a client can send any value of a
+    header the proxy passes through. x-forwarded-for can never be configured here, because it
+    is a client-supplied list that every proxy only appends to.
+    """
+    peer = request.client.host if request.client else "unknown"
+    header = request.app.state.settings.client_ip_header
+    if not header:
+        return peer
+    try:
+        address = ipaddress.ip_address(request.headers.get(header, ""))
+    except ValueError:
+        return peer
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.scope_id:  # fe80::1%a, fe80::1%b: one client could mint endless buckets
+            return peer
+        address = address.ipv4_mapped or address  # ::ffff:1.2.3.4 is the same client as 1.2.3.4
+    return str(address)
 
 
 def rate_limit(
