@@ -1,6 +1,7 @@
 import { Inter } from "next/font/google";
 import { connection } from "next/server";
 import type { ReactNode } from "react";
+import { DemoBanner } from "@/components/DemoBanner";
 import { Header } from "@/components/Header";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -16,6 +17,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="en" className={inter.variable} suppressHydrationWarning>
       <body className="min-h-screen font-sans antialiased">
         <Providers>
+          <DemoBanner />
           <Header />
           <main>{children}</main>
         </Providers>

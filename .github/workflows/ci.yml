@@ -60,6 +60,8 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+        env:
+          ALLOW_LOCALHOST_API: "true" # CI builds only to check; the guard needs a URL otherwise
       - run: npm run bundle-size
 
   # Informational: not a required check until it has been green on main ten times in a row.

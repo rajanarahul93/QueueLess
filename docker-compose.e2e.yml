@@ -1,6 +1,11 @@
 # End-to-end tests only (web/scripts/e2e-stack.sh adds it with -f): short live streams, so the
 # tests see the server's stream lifetime end and the client reconnect. Never used elsewhere.
 services:
+  web:
+    build:
+      args:
+        # The suite builds for localhost on purpose (the build otherwise needs an API URL).
+        ALLOW_LOCALHOST_API: "true"
   api:
     environment:
       # The suite signs in more than 20 times from one IP; a deployment cannot raise this

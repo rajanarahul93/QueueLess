@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState, type FormEvent } from "react";
 import { Alert } from "@/components/Alert";
 import { Button } from "@/components/Button";
+import { DemoCode } from "@/components/DemoCode";
 import { OtpInput } from "@/components/OtpInput";
 import { Form } from "@/components/Form";
 import { ApiError } from "@/lib/api/client";
@@ -21,6 +22,7 @@ function PhoneLogin() {
   const [number, setNumber] = useState("");
   const [phone, setPhone] = useState<string | null>(null); // set once a code was sent
   const [code, setCode] = useState("");
+  const [demoCode, setDemoCode] = useState<string | null>(null); // demo mode only, memory only
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [wait, startWait] = useCountdown();
@@ -29,7 +31,7 @@ function PhoneLogin() {
     setBusy(true);
     setError(null);
     try {
-      await requestOtp(target);
+      setDemoCode(await requestOtp(target));
       setPhone(target);
       setCode("");
       startWait(RESEND_SEC);
@@ -115,6 +117,7 @@ function PhoneLogin() {
             Enter the 6-digit code we sent to {phone.slice(0, -4).replace(/\d/g, "•")}
             {phone.slice(-4)}.
           </p>
+          {demoCode && <DemoCode code={demoCode} />}
           <OtpInput
             value={code}
             onChange={setCode}

@@ -76,7 +76,7 @@ docker compose logs api | grep "MOCK SMS"     # MOCK SMS to ***3210: OTP code 12
 
 ```text
 cd backend && uv sync && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest   # pytest needs Docker
-cd web && npm ci && npm run lint && npm run typecheck && npm run build
+cd web && npm ci && npm run lint && npm run typecheck && ALLOW_LOCALHOST_API=true npm run build
 cd web && npm test                                                                                           # unit tests
 ```
 

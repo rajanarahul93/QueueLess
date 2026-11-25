@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from "next/server";
 export function proxy(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
   const dev = process.env.NODE_ENV === "development";
-  const api = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  const api = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const policy = [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev ? " 'unsafe-eval'" : ""}`,

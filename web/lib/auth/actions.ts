@@ -1,4 +1,5 @@
 import { api } from "@/lib/api/client";
+import type { components } from "@/lib/api/schema";
 import { adopt, type Session, type User } from "@/lib/auth/session";
 
 type AuthBody = { access_token: string; user: User };
@@ -9,8 +10,16 @@ function start(body: AuthBody): Session {
   return session;
 }
 
-export function requestOtp(phone: string): Promise<void> {
-  return api("/v1/auth/otp/request", { method: "POST", body: { phone }, auth: false });
+/** Sends the code. In the API's demo mode no SMS goes out and the 202 body carries the code;
+ *  that is returned (six digits only) and never stored. Otherwise null. */
+export async function requestOtp(phone: string): Promise<string | null> {
+  const body = await api<components["schemas"]["OtpRequested"] | undefined>("/v1/auth/otp/request", {
+    method: "POST",
+    body: { phone },
+    auth: false,
+  });
+  const shown = body?.demo_code;
+  return typeof shown === "string" && /^\d{6}$/.test(shown) ? shown : null;
 }
 
 export async function verifyOtp(phone: string, code: string): Promise<Session> {
