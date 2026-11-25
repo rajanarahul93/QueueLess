@@ -4,4 +4,5 @@ e2e
 tests
 playwright.config.ts
 vitest.config.mts
-scripts
+scripts/*
+!scripts/check-build-env.mjs

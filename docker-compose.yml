@@ -63,6 +63,8 @@ services:
       context: ./web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-}
+        ALLOW_LOCALHOST_API: ${ALLOW_LOCALHOST_API:-}
     ports: ["127.0.0.1:3000:3000"]
     depends_on:
       api: {condition: service_healthy}
