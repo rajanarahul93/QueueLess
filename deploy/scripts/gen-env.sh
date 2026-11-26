@@ -31,6 +31,7 @@ r3=$(openssl rand -hex 32)
   printf 'POSTGRES_USER=queueless\n'
   printf 'POSTGRES_DB=queueless\n'
   printf 'POSTGRES_PASSWORD=%s\n' "$r1"
+  printf 'DATABASE_URL=postgresql+asyncpg://queueless:%s@postgres:5432/queueless\n' "$r1"
   printf 'JWT_SECRET=%s\n' "$r2"
   printf 'STREAM_TOKEN_SECRET=%s\n' "$r3"
   printf 'LOG_LEVEL=INFO\n'
