@@ -1,0 +1,75 @@
+# One hostname, one certificate, one origin: the API paths go to the api container, everything else to web.
+# SITE_HOST comes from the environment (a name such as 203-0-113-7.sslip.io, or "localhost" for a local test,
+# where Caddy issues from its own internal CA instead of Let's Encrypt).
+#
+# Paths owned by the API: /v1/*, /healthz, /readyz. The web app owns everything else, and no web route
+# overlaps these. FastAPI's /docs, /redoc and /openapi.json are NOT routed, so they are not public.
+{
+	servers {
+		protocols h1 h2
+		timeouts {
+			read_header 10s
+			read_body   30s
+			# A stream lives at most SSE_MAX_STREAM_SEC (1800 s) before the API closes it and the client reconnects.
+			write       2h
+			idle        2m
+		}
+	}
+}
+
+# The client's address, as Caddy sees it. Setting (not appending) means a client-supplied X-Real-IP is
+# overwritten, never forwarded. The API trusts only this header (CLIENT_IP_HEADER=x-real-ip). X-Forwarded-For is
+# overwritten too and the API ignores it.
+(proxy_headers) {
+	header_up X-Real-IP {remote_host}
+	header_up X-Forwarded-For {remote_host}
+}
+
+{$SITE_HOST} {
+	# Access log to stdout. The query string is cut off: stream URLs carry a short-lived stream_token.
+	# Cookie and Authorization headers are logged as REDACTED by Caddy itself.
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp \?.* ""
+			}
+		}
+	}
+
+	# Server-sent events: no compression (it would buffer), flush every write, no body.
+	@stream path_regexp ^/v1/(queues/[^/]+/stream|tokens/[^/]+/stream|businesses/[^/]+/board)$
+	handle @stream {
+		reverse_proxy api:8000 {
+			import proxy_headers
+			flush_interval -1
+			transport http {
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	@api path /v1/* /healthz /readyz
+	handle @api {
+		encode zstd gzip
+		request_body {
+			max_size 64KB
+		}
+		header X-Content-Type-Options nosniff
+		reverse_proxy api:8000 {
+			import proxy_headers
+		}
+	}
+
+	# The web app sets its own security headers; they pass through untouched.
+	handle {
+		encode zstd gzip
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy web:3000 {
+			import proxy_headers
+		}
+	}
+}

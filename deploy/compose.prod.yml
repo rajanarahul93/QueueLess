@@ -1,0 +1,171 @@
+# Production demo stack for ONE Oracle Always Free A1 VM (linux/arm64, 6 GB RAM, 1 OCPU).
+#
+# A standalone file, not an overlay on ../docker-compose.yml. That file publishes Postgres, Redis, the API
+# and the web app on localhost, hard-codes APP_ENV=local and OTP_PROVIDER=mock, and falls back to local
+# placeholder secrets. A merge can add to its `ports` but not cleanly remove them, so an overlay would make
+# "no host ports except Caddy" and "no placeholder falls through" depend on every future edit of the dev file.
+# This file stands alone and lists exactly what runs in production. The two share only the build contexts.
+#
+# Run it through deploy/scripts/update.sh. By hand:
+#   docker compose --env-file /etc/queueless/prod.env -f deploy/compose.prod.yml up -d --build
+# Every value comes from that env file at run time (deploy/scripts/gen-env.sh writes it, mode 600, outside the
+# checkout). Nothing secret is baked into an image or committed. Required values fail loudly when missing.
+#
+# Pinned base images (tag plus index digest, read 2026-11-25; the digest covers linux/arm64 and amd64):
+#   postgres:16.16  sha256:07abc3f43c9395b0bdbbab36bc25ddb0e8d83cd4fcafb5fb7d6abe14ff156dd8
+#   redis:7.4.12    sha256:6b645a37f49b0546582468706b32e71a8b7fbb5ba4583d0f9e27a8004716b738
+#   caddy:2.11.9    sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b
+# The api, worker and web images are built on the VM from the checkout, so they are native arm64. Their own
+# base images (python:3.12-slim, node:24-alpine) are tag-pinned in the Dockerfiles, not digest-pinned.
+name: queueless-prod
+
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+
+x-backend-env: &backend_env
+  # The complete URL is written into the env file by gen-env.sh.
+  DATABASE_URL: ${DATABASE_URL:?}
+  REDIS_URL: redis://redis:6379/0
+  APP_ENV: demo
+  OTP_PROVIDER: demo
+  # Caddy overwrites X-Real-IP on every request, so the API may trust it (and only it).
+  CLIENT_IP_HEADER: x-real-ip
+  # One origin: the web app and the API share it, so CORS never applies. Settings still requires it in demo.
+  CORS_ORIGINS: ${PUBLIC_ORIGIN:?}
+  # Host-only refresh cookie (Secure, HttpOnly, SameSite=Lax, Path=/v1/auth): COOKIE_DOMAIN stays empty.
+  COOKIE_DOMAIN: ""
+  JWT_SECRET: ${JWT_SECRET:?}
+  STREAM_TOKEN_SECRET: ${STREAM_TOKEN_SECRET:?}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DB_POOL_SIZE: "8"
+  # SSE_MAX_STREAM_SEC is left at its default (1800 s); the client reconnects.
+
+services:
+  caddy:
+    image: caddy:2.11.9@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b
+    platform: linux/arm64
+    restart: unless-stopped
+    # The only published ports. The host side is overridable so a laptop that already uses 80 and 443 can test.
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_HOST: ${SITE_HOST:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: {condition: service_healthy}
+      web: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    mem_limit: 128m
+    logging: *logging
+
+  web:
+    build:
+      context: ../web
+      args:
+        # Inlined into the browser bundle at build time. The build guard stays ON: no ALLOW_LOCALHOST_API here,
+        # so an empty PUBLIC_ORIGIN stops the build instead of shipping a bundle that calls localhost.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_ORIGIN:?}
+        NEXT_PUBLIC_DEMO_MODE: "true"
+    image: queueless-web:${QL_TAG:-current}
+    platform: linux/arm64
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 768m
+    logging: *logging
+
+  api:
+    build: ../backend
+    image: queueless-backend:${QL_TAG:-current}
+    platform: linux/arm64
+    restart: unless-stopped
+    environment: *backend_env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    mem_limit: 1g
+    logging: *logging
+
+  worker:
+    image: queueless-backend:${QL_TAG:-current}
+    platform: linux/arm64
+    restart: unless-stopped
+    command: ["arq", "app.workers.main.WorkerSettings"]
+    environment: *backend_env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      api: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.workers.health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 512m
+    logging: *logging
+
+  postgres:
+    image: postgres:16.16@sha256:07abc3f43c9395b0bdbbab36bc25ddb0e8d83cd4fcafb5fb7d6abe14ff156dd8
+    platform: linux/arm64
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    # api and worker use 8 connections each at most; 60 leaves room for backups and the restore drill.
+    command: ["postgres", "-c", "max_connections=60", "-c", "shared_buffers=256MB"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    mem_limit: 1g
+    logging: *logging
+
+  redis:
+    image: redis:7.4.12@sha256:6b645a37f49b0546582468706b32e71a8b7fbb5ba4583d0f9e27a8004716b738
+    platform: linux/arm64
+    restart: unless-stopped
+    # AOF on, fsync every second. noeviction: OTP codes, rate limits and idempotency keys must never be
+    # dropped silently; at the limit Redis refuses writes and the API says so.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    mem_limit: 256m
+    logging: *logging
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
